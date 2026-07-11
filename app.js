@@ -41,6 +41,62 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
   const CATEGORIES = ['Laptops & Computers', 'Smartphones & Tablets', 'Networking Hardware', 'Monitors & Displays', 'Printers & Scanners', 'AV Equipment', 'Lab Electronics', 'Other Devices'];
   const DEFAULT_CERTIFIED = ["HOD", "CEO", "CFO", "COO", "Chairperson", "President", "Director", "VP"];
 
+  const COUNTRIES = [
+    { name: 'India (+91)', code: '+91', digits: [10], placeholder: '98765 43210' },
+    { name: 'United States / Canada (+1)', code: '+1', digits: [10], placeholder: '201 555 0123' },
+    { name: 'United Kingdom (+44)', code: '+44', digits: [10], placeholder: '7700 900077' },
+    { name: 'Australia (+61)', code: '+61', digits: [9], placeholder: '412 345 678' },
+    { name: 'Germany (+49)', code: '+49', digits: [10, 11], placeholder: '151 23456789' },
+    { name: 'France (+33)', code: '+33', digits: [9], placeholder: '6 1234 5678' },
+    { name: 'Singapore (+65)', code: '+65', digits: [8], placeholder: '8123 4567' },
+    { name: 'United Arab Emirates (+971)', code: '+971', digits: [9], placeholder: '50 123 4567' },
+    { name: 'Saudi Arabia (+966)', code: '+966', digits: [9], placeholder: '50 123 4567' },
+    { name: 'Japan (+81)', code: '+81', digits: [10], placeholder: '90 1234 5678' }
+  ];
+
+  function isValidEmail(email) {
+    if (!email) return true;
+    const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return re.test(email);
+  }
+
+  function cleanPhoneDigits(str) {
+    return str.replace(/\D/g, '');
+  }
+
+  function validatePhone(numberStr, countryCode) {
+    const cleaned = cleanPhoneDigits(numberStr);
+    const country = COUNTRIES.find(c => c.code === countryCode);
+    if (!country) return { valid: false, message: 'Invalid country code selected.' };
+    
+    const isValid = country.digits.includes(cleaned.length);
+    if (!isValid) {
+      const expected = country.digits.join(' or ');
+      return { 
+        valid: false, 
+        message: `Phone number must be exactly ${expected} digits for ${country.name.split(' (')[0]}.`
+      };
+    }
+    return { valid: true, cleaned };
+  }
+
+  function parsePhoneAndCountry(fullPhone) {
+    if (!fullPhone) return { countryCode: '+91', localNumber: '' };
+    const sortedCountries = [...COUNTRIES].sort((a, b) => b.code.length - a.code.length);
+    for (const c of sortedCountries) {
+      if (fullPhone.startsWith(c.code)) {
+        return { countryCode: c.code, localNumber: fullPhone.substring(c.code.length) };
+      }
+    }
+    if (fullPhone.startsWith('+')) {
+      const match = fullPhone.match(/^\+\d+/);
+      if (match) {
+        return { countryCode: match[0], localNumber: fullPhone.substring(match[0].length) };
+      }
+    }
+    return { countryCode: '+91', localNumber: fullPhone };
+  }
+
   const DEFAULT_COMPANIES = {
     "Google": {
       name: "Google",
@@ -2319,9 +2375,25 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
             <div class="field"><label for="d-office-id">Office ID</label><input id="d-office-id" placeholder="e.g. G-100400" required></div>
             <div class="field"><label for="d-name">Full Name</label><input id="d-name" placeholder="e.g. Sarah Connor" required></div>
             <div class="field"><label for="d-post">Designation</label><input id="d-post" placeholder="e.g. Specialist, HOD-Design" required></div>
-            <div class="field"><label for="d-official-phone">Official Phone</label><input id="d-official-phone" placeholder="e.g. 011-555666" required></div>
+            <div class="field">
+              <label for="d-official-phone">Official Phone</label>
+              <div style="display:flex; gap:6px;">
+                <select id="d-official-country" style="width:100px; padding:8px 6px; font-size:12.5px; border:1px solid var(--line-strong); border-radius:6px; background:var(--surface);">
+                  ${COUNTRIES.map(c => `<option value="${esc(c.code)}">${esc(c.code)}</option>`).join('')}
+                </select>
+                <input id="d-official-phone" placeholder="e.g. 98765 43210" style="flex:1;" required>
+              </div>
+            </div>
             <div class="field-row">
-              <div class="field"><label for="d-personal-phone">Personal Phone (Optional)</label><input id="d-personal-phone" placeholder="e.g. 9876543212"></div>
+              <div class="field">
+                <label for="d-personal-phone">Personal Phone (Optional)</label>
+                <div style="display:flex; gap:6px;">
+                  <select id="d-personal-country" style="width:100px; padding:8px 6px; font-size:12.5px; border:1px solid var(--line-strong); border-radius:6px; background:var(--surface);">
+                    ${COUNTRIES.map(c => `<option value="${esc(c.code)}">${esc(c.code)}</option>`).join('')}
+                  </select>
+                  <input id="d-personal-phone" placeholder="e.g. 98765 43210" style="flex:1;">
+                </div>
+              </div>
               <div class="field"><label for="d-email">Email (Optional)</label><input id="d-email" type="email" placeholder="e.g. sarah@company.com"></div>
             </div>
           </div>
@@ -2332,6 +2404,25 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
         </div>
       </div>
     `;
+
+    const oSelect = document.getElementById('d-official-country');
+    const oInput = document.getElementById('d-official-phone');
+    if (oSelect && oInput) {
+      oSelect.onchange = () => {
+        const country = COUNTRIES.find(c => c.code === oSelect.value);
+        if (country) oInput.placeholder = 'e.g. ' + country.placeholder;
+      };
+    }
+    
+    const pSelect = document.getElementById('d-personal-country');
+    const pInput = document.getElementById('d-personal-phone');
+    if (pSelect && pInput) {
+      pSelect.onchange = () => {
+        const country = COUNTRIES.find(c => c.code === pSelect.value);
+        if (country) pInput.placeholder = 'e.g. ' + country.placeholder;
+      };
+    }
+
     document.getElementById('modal-overlay').addEventListener('click', e => { if (e.target.id === 'modal-overlay') closeModal(); });
   }
 
@@ -2339,13 +2430,40 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     const officeId = document.getElementById('d-office-id').value.trim();
     const name = document.getElementById('d-name').value.trim();
     const designation = document.getElementById('d-post').value.trim();
-    const officialPhone = document.getElementById('d-official-phone').value.trim();
-    const personalPhone = document.getElementById('d-personal-phone').value.trim();
+    
+    const officialCountry = document.getElementById('d-official-country').value;
+    const officialRaw = document.getElementById('d-official-phone').value.trim();
+    const personalCountry = document.getElementById('d-personal-country').value;
+    const personalRaw = document.getElementById('d-personal-phone').value.trim();
+    
     const email = document.getElementById('d-email').value.trim();
     
-    if (!officeId || !name || !designation || !officialPhone) {
+    if (!officeId || !name || !designation || !officialRaw) {
       showToast('Please fill in all required fields.');
       return;
+    }
+
+    if (email && !isValidEmail(email)) {
+      showToast('Please enter a valid email address.');
+      return;
+    }
+
+    // Phone validations
+    const oVal = validatePhone(officialRaw, officialCountry);
+    if (!oVal.valid) {
+      showToast(`Official Phone: ${oVal.message}`);
+      return;
+    }
+    const officialPhone = officialCountry + oVal.cleaned;
+
+    let personalPhone = '';
+    if (personalRaw) {
+      const pVal = validatePhone(personalRaw, personalCountry);
+      if (!pVal.valid) {
+        showToast(`Personal Phone: ${pVal.message}`);
+        return;
+      }
+      personalPhone = personalCountry + pVal.cleaned;
     }
     
     const emp = {
@@ -2372,6 +2490,13 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     const directory = await DbService.getDirectoryEmployees();
     const emp = directory.find(e => e.id === id);
     if (!emp) return;
+
+    const officialParsed = parsePhoneAndCountry(emp.officialPhone);
+    const personalParsed = parsePhoneAndCountry(emp.personalPhone);
+
+    const officialCountry = COUNTRIES.find(c => c.code === officialParsed.countryCode) || COUNTRIES[0];
+    const personalCountry = COUNTRIES.find(c => c.code === personalParsed.countryCode) || COUNTRIES[0];
+
     document.getElementById('modal-root').innerHTML = `
       <div class="modal-overlay" id="modal-overlay">
         <div class="modal">
@@ -2380,9 +2505,25 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
             <div class="field"><label for="d-office-id">Office ID</label><input id="d-office-id" value="${esc(emp.officeId)}" required></div>
             <div class="field"><label for="d-name">Full Name</label><input id="d-name" value="${esc(emp.name)}" required></div>
             <div class="field"><label for="d-post">Designation</label><input id="d-post" value="${esc(emp.designation)}" required></div>
-            <div class="field"><label for="d-official-phone">Official Phone</label><input id="d-official-phone" value="${esc(emp.officialPhone)}" required></div>
+            <div class="field">
+              <label for="d-official-phone">Official Phone</label>
+              <div style="display:flex; gap:6px;">
+                <select id="d-official-country" style="width:100px; padding:8px 6px; font-size:12.5px; border:1px solid var(--line-strong); border-radius:6px; background:var(--surface);">
+                  ${COUNTRIES.map(c => `<option value="${esc(c.code)}" ${officialParsed.countryCode === c.code ? 'selected' : ''}>${esc(c.code)}</option>`).join('')}
+                </select>
+                <input id="d-official-phone" placeholder="e.g. ${esc(officialCountry.placeholder)}" value="${esc(officialParsed.localNumber)}" style="flex:1;" required>
+              </div>
+            </div>
             <div class="field-row">
-              <div class="field"><label for="d-personal-phone">Personal Phone (Optional)</label><input id="d-personal-phone" value="${esc(emp.personalPhone)}"></div>
+              <div class="field">
+                <label for="d-personal-phone">Personal Phone (Optional)</label>
+                <div style="display:flex; gap:6px;">
+                  <select id="d-personal-country" style="width:100px; padding:8px 6px; font-size:12.5px; border:1px solid var(--line-strong); border-radius:6px; background:var(--surface);">
+                    ${COUNTRIES.map(c => `<option value="${esc(c.code)}" ${personalParsed.countryCode === c.code ? 'selected' : ''}>${esc(c.code)}</option>`).join('')}
+                  </select>
+                  <input id="d-personal-phone" placeholder="e.g. ${esc(personalCountry.placeholder)}" value="${esc(personalParsed.localNumber)}" style="flex:1;">
+                </div>
+              </div>
               <div class="field"><label for="d-email">Email (Optional)</label><input id="d-email" type="email" value="${esc(emp.email)}"></div>
             </div>
           </div>
@@ -2393,6 +2534,25 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
         </div>
       </div>
     `;
+
+    const oSelect = document.getElementById('d-official-country');
+    const oInput = document.getElementById('d-official-phone');
+    if (oSelect && oInput) {
+      oSelect.onchange = () => {
+        const country = COUNTRIES.find(c => c.code === oSelect.value);
+        if (country) oInput.placeholder = 'e.g. ' + country.placeholder;
+      };
+    }
+    
+    const pSelect = document.getElementById('d-personal-country');
+    const pInput = document.getElementById('d-personal-phone');
+    if (pSelect && pInput) {
+      pSelect.onchange = () => {
+        const country = COUNTRIES.find(c => c.code === pSelect.value);
+        if (country) pInput.placeholder = 'e.g. ' + country.placeholder;
+      };
+    }
+
     document.getElementById('modal-overlay').addEventListener('click', e => { if (e.target.id === 'modal-overlay') closeModal(); });
   }
 
@@ -2400,13 +2560,40 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     const officeId = document.getElementById('d-office-id').value.trim();
     const name = document.getElementById('d-name').value.trim();
     const designation = document.getElementById('d-post').value.trim();
-    const officialPhone = document.getElementById('d-official-phone').value.trim();
-    const personalPhone = document.getElementById('d-personal-phone').value.trim();
+    
+    const officialCountry = document.getElementById('d-official-country').value;
+    const officialRaw = document.getElementById('d-official-phone').value.trim();
+    const personalCountry = document.getElementById('d-personal-country').value;
+    const personalRaw = document.getElementById('d-personal-phone').value.trim();
+    
     const email = document.getElementById('d-email').value.trim();
     
-    if (!officeId || !name || !designation || !officialPhone) {
+    if (!officeId || !name || !designation || !officialRaw) {
       showToast('Please fill in all required fields.');
       return;
+    }
+
+    if (email && !isValidEmail(email)) {
+      showToast('Please enter a valid email address.');
+      return;
+    }
+
+    // Phone validations
+    const oVal = validatePhone(officialRaw, officialCountry);
+    if (!oVal.valid) {
+      showToast(`Official Phone: ${oVal.message}`);
+      return;
+    }
+    const officialPhone = officialCountry + oVal.cleaned;
+
+    let personalPhone = '';
+    if (personalRaw) {
+      const pVal = validatePhone(personalRaw, personalCountry);
+      if (!pVal.valid) {
+        showToast(`Personal Phone: ${pVal.message}`);
+        return;
+      }
+      personalPhone = personalCountry + pVal.cleaned;
     }
     
     const emp = {
@@ -2457,6 +2644,12 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
       return;
     }
     
+    let fallbackCountryCode = '+91';
+    if (currentUser && currentUser.officialPhone) {
+      const parsedAdminPhone = parsePhoneAndCountry(currentUser.officialPhone);
+      fallbackCountryCode = parsedAdminPhone.countryCode;
+    }
+
     const lines = text.split('\n');
     let imported = 0;
     let failed = 0;
@@ -2464,17 +2657,59 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     for (let line of lines) {
       line = line.trim();
       if (!line) continue;
+      
+      if (line.toLowerCase().startsWith('officeid') || line.toLowerCase().startsWith('office id')) {
+        continue;
+      }
+      
       const parts = line.split(/[,\t]/).map(p => p.trim());
       if (parts.length >= 4) {
+        const officeId = parts[0];
+        const name = parts[1];
+        const designation = parts[2];
+        const rawOfficialPhone = parts[3];
+        const rawPersonalPhone = parts[4] || '';
+        const email = parts[5] || '';
+        
+        if (!officeId || !name || !designation || !rawOfficialPhone) {
+          failed++;
+          continue;
+        }
+
+        if (email && !isValidEmail(email)) {
+          failed++;
+          continue;
+        }
+
+        const officialParsed = parsePhoneAndCountry(rawOfficialPhone.startsWith('+') ? rawOfficialPhone : fallbackCountryCode + rawOfficialPhone);
+        const oVal = validatePhone(officialParsed.localNumber, officialParsed.countryCode);
+        if (!oVal.valid) {
+          failed++;
+          continue;
+        }
+        const officialPhone = officialParsed.countryCode + oVal.cleaned;
+
+        let personalPhone = '';
+        if (rawPersonalPhone) {
+          const personalParsed = parsePhoneAndCountry(rawPersonalPhone.startsWith('+') ? rawPersonalPhone : fallbackCountryCode + rawPersonalPhone);
+          const pVal = validatePhone(personalParsed.localNumber, personalParsed.countryCode);
+          if (!pVal.valid) {
+            failed++;
+            continue;
+          }
+          personalPhone = personalParsed.countryCode + pVal.cleaned;
+        }
+
         const emp = {
           id: 'ed' + Date.now() + Math.random().toString(36).slice(2, 7),
-          officeId: parts[0],
-          name: parts[1],
-          designation: parts[2],
-          officialPhone: parts[3],
-          personalPhone: parts[4] || '',
-          email: parts[5] || ''
+          officeId,
+          name,
+          designation,
+          officialPhone,
+          personalPhone,
+          email
         };
+        
         const res = await DbService.addDirectoryEmployee(emp);
         if (res.success) {
           imported++;
@@ -2486,7 +2721,7 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
       }
     }
     
-    showToast(`Bulk Import: Successfully imported ${imported} records. (${failed} skipped/failed)`);
+    showToast(`Bulk Import: Successfully imported ${imported} records. (${failed} skipped due to invalid data format).`);
     await DbService.loadAllData();
     closeModal();
     render();
@@ -3042,6 +3277,15 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
         const companyOptions = companiesList.map(c => `<option value="${esc(c)}" ${signupData.company === c ? 'selected' : ''}>${esc(c)}</option>`).join('');
         const selectOther = signupData.company === 'Other' ? 'selected' : '';
         const otherStyle = signupData.company === 'Other' ? 'block' : 'none';
+
+        const personalParsed = parsePhoneAndCountry(signupData.personalPhone || '');
+        const officialParsed = parsePhoneAndCountry(signupData.officialPhone || '');
+        
+        const personalCountry = COUNTRIES.find(c => c.code === personalParsed.countryCode) || COUNTRIES[0];
+        const officialCountry = COUNTRIES.find(c => c.code === officialParsed.countryCode) || COUNTRIES[0];
+        
+        const personalPlaceholder = personalCountry.placeholder;
+        const officialPlaceholder = officialCountry.placeholder;
         
         container.innerHTML = `
           <div class="auth-card wide">
@@ -3085,11 +3329,21 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
               <div class="field-row">
                 <div class="field">
                   <label for="signup-personal-phone">Personal Number</label>
-                  <input type="tel" id="signup-personal-phone" placeholder="e.g. 9876543210" value="${esc(signupData.personalPhone || '')}" required>
+                  <div style="display:flex; gap:6px;">
+                    <select id="signup-personal-country" style="width:100px; padding:8px 6px; font-size:12.5px; border:1px solid var(--line-strong); border-radius:6px; background:var(--surface);">
+                      ${COUNTRIES.map(c => `<option value="${esc(c.code)}" ${personalParsed.countryCode === c.code ? 'selected' : ''}>${esc(c.code)}</option>`).join('')}
+                    </select>
+                    <input type="tel" id="signup-personal-phone" placeholder="e.g. ${esc(personalPlaceholder)}" value="${esc(personalParsed.localNumber)}" style="flex:1;" required>
+                  </div>
                 </div>
                 <div class="field">
                   <label for="signup-official-phone">Official Number</label>
-                  <input type="tel" id="signup-official-phone" placeholder="e.g. 011-234567" value="${esc(signupData.officialPhone || '')}" required>
+                  <div style="display:flex; gap:6px;">
+                    <select id="signup-official-country" style="width:100px; padding:8px 6px; font-size:12.5px; border:1px solid var(--line-strong); border-radius:6px; background:var(--surface);">
+                      ${COUNTRIES.map(c => `<option value="${esc(c.code)}" ${officialParsed.countryCode === c.code ? 'selected' : ''}>${esc(c.code)}</option>`).join('')}
+                    </select>
+                    <input type="tel" id="signup-official-phone" placeholder="e.g. ${esc(officialPlaceholder)}" value="${esc(officialParsed.localNumber)}" style="flex:1;" required>
+                  </div>
                 </div>
               </div>
               
@@ -3111,6 +3365,24 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
         compSelect.onchange = () => {
           otherWrap.style.display = compSelect.value === 'Other' ? 'block' : 'none';
         };
+
+        const pSelect = document.getElementById('signup-personal-country');
+        const pInput = document.getElementById('signup-personal-phone');
+        if (pSelect && pInput) {
+          pSelect.onchange = () => {
+            const country = COUNTRIES.find(c => c.code === pSelect.value);
+            if (country) pInput.placeholder = 'e.g. ' + country.placeholder;
+          };
+        }
+        
+        const oSelect = document.getElementById('signup-official-country');
+        const oInput = document.getElementById('signup-official-phone');
+        if (oSelect && oInput) {
+          oSelect.onchange = () => {
+            const country = COUNTRIES.find(c => c.code === oSelect.value);
+            if (country) oInput.placeholder = 'e.g. ' + country.placeholder;
+          };
+        }
         
         document.getElementById('signup-step1-form').addEventListener('submit', handleStep1Submit);
         document.getElementById('btn-signup-cancel').onclick = () => {
@@ -3345,8 +3617,12 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     const officeId = document.getElementById('signup-office-id').value.trim();
     const companySelect = document.getElementById('signup-company').value;
     const otherCompany = document.getElementById('signup-other-company').value.trim();
-    const personalPhone = document.getElementById('signup-personal-phone').value.trim();
-    const officialPhone = document.getElementById('signup-official-phone').value.trim();
+    
+    const personalCountry = document.getElementById('signup-personal-country').value;
+    const personalRaw = document.getElementById('signup-personal-phone').value.trim();
+    const officialCountry = document.getElementById('signup-official-country').value;
+    const officialRaw = document.getElementById('signup-official-phone').value.trim();
+    
     const email = document.getElementById('signup-email').value.trim();
     
     const company = companySelect === 'Other' ? otherCompany : companySelect;
@@ -3366,13 +3642,28 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
       return;
     }
 
+    // Phone validations
+    const pVal = validatePhone(personalRaw, personalCountry);
+    if (!pVal.valid) {
+      showToast(`Personal Number: ${pVal.message}`);
+      return;
+    }
+    const oVal = validatePhone(officialRaw, officialCountry);
+    if (!oVal.valid) {
+      showToast(`Official Number: ${oVal.message}`);
+      return;
+    }
+
+    const personalPhone = personalCountry + pVal.cleaned;
+    const officialPhone = officialCountry + oVal.cleaned;
+
     const phoneExists = await DbService.isPhoneRegistered(personalPhone, officialPhone, company);
     if (phoneExists) {
       showToast('One of the phone numbers is already registered to another user.');
       return;
     }
     
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if (!isValidEmail(email)) {
       showToast('Please enter a valid email address.');
       return;
     }
