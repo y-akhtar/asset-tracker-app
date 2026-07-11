@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS items (
     assigned_to VARCHAR(255),
     visible_to_users BOOLEAN DEFAULT TRUE NOT NULL,
     company_id INT REFERENCES companies(id) ON DELETE CASCADE,
+    checked_out_at TIMESTAMP WITH TIME ZONE,
+    expiration_date TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );

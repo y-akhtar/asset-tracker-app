@@ -38,7 +38,7 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
   let tempSignup = null;
   let simulatedOtp = '';
 
-  const CATEGORIES = ['IT Hardware','Machinery','Tools','Furniture','Vehicles','Safety Equipment','Electronics','Other'];
+  const CATEGORIES = ['Laptops & Computers', 'Smartphones & Tablets', 'Networking Hardware', 'Monitors & Displays', 'Printers & Scanners', 'AV Equipment', 'Lab Electronics', 'Other Devices'];
   const DEFAULT_CERTIFIED = ["HOD", "CEO", "CFO", "COO", "Chairperson", "President", "Director", "VP"];
 
   const DEFAULT_COMPANIES = {
@@ -630,7 +630,6 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
             saveSession(currentUser);
           } else {
             console.warn("DbService: Failed to resolve company ID for name:", currentUser.company);
-            // Fallback: create company
             const insertComp = await this.client.from('companies').insert({ name: currentUser.company }).select();
             if (insertComp.data && insertComp.data.length > 0) {
               currentUser.companyId = insertComp.data[0].id;
@@ -659,9 +658,100 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
           status: i.status,
           assignedTo: i.assigned_to || '',
           visibleToUsers: i.visible_to_users,
+          checkedOutAt: i.checked_out_at ? new Date(i.checked_out_at).getTime() : null,
+          expirationDate: i.expiration_date ? new Date(i.expiration_date).getTime() : null,
           createdAt: new Date(i.created_at).getTime(),
           updatedAt: new Date(i.updated_at).getTime()
         }));
+
+        // Self-Healing Data Migration for checked-out legacy multi-quantity items
+        let migratedFound = false;
+        for (const item of items) {
+          if (item.status === 'out' && item.quantity > 1) {
+            console.log("Self-Healing: Splitting legacy checked-out asset", item.name);
+            await this.client.from('items').update({
+              quantity: item.quantity - 1,
+              status: 'in',
+              assigned_to: '',
+              checked_out_at: null,
+              expiration_date: null,
+              updated_at: new Date().toISOString()
+            }).eq('id', item.id);
+            
+            const childId = 'itm_' + Date.now() + Math.random().toString(36).slice(2, 5).toUpperCase();
+            const childBarcode = item.barcode + '-' + Math.floor(100 + Math.random() * 900);
+            
+            await this.client.from('items').insert({
+              id: childId,
+              name: item.name,
+              category: item.category,
+              quantity: 1,
+              barcode: childBarcode,
+              department: item.department || '',
+              location: item.location || '',
+              notes: item.notes || '',
+              status: 'out',
+              assigned_to: item.assignedTo || currentUser.name,
+              checked_out_at: item.checkedOutAt ? new Date(item.checkedOutAt).toISOString() : new Date().toISOString(),
+              expiration_date: item.expirationDate ? new Date(item.expirationDate).toISOString() : new Date().toISOString(),
+              visible_to_users: item.visibleToUsers,
+              company_id: currentUser.companyId
+            });
+            migratedFound = true;
+          }
+        }
+
+        if (migratedFound) {
+          const itemsRes2 = await this.client.from('items').select('*').eq('company_id', currentUser.companyId);
+          items = (itemsRes2.data || []).map(i => ({
+            id: i.id,
+            name: i.name,
+            category: i.category,
+            quantity: i.quantity,
+            barcode: i.barcode,
+            department: i.department || '',
+            location: i.location || '',
+            notes: i.notes || '',
+            status: i.status,
+            assignedTo: i.assigned_to || '',
+            visibleToUsers: i.visible_to_users,
+            checkedOutAt: i.checked_out_at ? new Date(i.checked_out_at).getTime() : null,
+            expirationDate: i.expiration_date ? new Date(i.expiration_date).getTime() : null,
+            createdAt: new Date(i.created_at).getTime(),
+            updatedAt: new Date(i.updated_at).getTime()
+          }));
+        }
+
+        // Auto-checkin expired assets in Supabase
+        let expiredFound = false;
+        for (const item of items) {
+          if (item.status === 'out' && item.expirationDate && item.expirationDate <= Date.now()) {
+            console.log("Auto-Checkin (Supabase): Session expired for asset", item.name);
+            await this.checkIn(item.id, item.assignedTo, true);
+            expiredFound = true;
+          }
+        }
+        
+        if (expiredFound) {
+          const itemsRes2 = await this.client.from('items').select('*').eq('company_id', currentUser.companyId);
+          items = (itemsRes2.data || []).map(i => ({
+            id: i.id,
+            name: i.name,
+            category: i.category,
+            quantity: i.quantity,
+            barcode: i.barcode,
+            department: i.department || '',
+            location: i.location || '',
+            notes: i.notes || '',
+            status: i.status,
+            assignedTo: i.assigned_to || '',
+            visibleToUsers: i.visible_to_users,
+            checkedOutAt: i.checked_out_at ? new Date(i.checked_out_at).getTime() : null,
+            expirationDate: i.expiration_date ? new Date(i.expiration_date).getTime() : null,
+            createdAt: new Date(i.created_at).getTime(),
+            updatedAt: new Date(i.updated_at).getTime()
+          }));
+        }
         
         // Load log
         const logRes = await this.client.from('activity_log').select('*').eq('company_id', currentUser.companyId).order('ts', { ascending: false }).limit(300);
@@ -682,6 +772,61 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
         loadCompanyData();
         const company = db.companies[currentUser.company];
         certifiedDesignations = (company && company.certifiedDesignations) ? company.certifiedDesignations : DEFAULT_CERTIFIED;
+
+        // Self-Healing Data Migration for checked-out legacy multi-quantity items in Local Storage
+        let migratedLocal = false;
+        for (const item of items) {
+          if (item.status === 'out' && item.quantity > 1) {
+            console.log("Self-Healing (Local): Splitting legacy checked-out asset", item.name);
+            item.quantity -= 1;
+            item.status = 'in';
+            const oldAssignedTo = item.assignedTo || currentUser.name;
+            const oldCheckedOutAt = item.checkedOutAt || Date.now();
+            const oldExpirationDate = item.expirationDate || (Date.now() + 90*24*60*60*1000);
+            
+            item.assignedTo = '';
+            item.checkedOutAt = null;
+            item.expirationDate = null;
+            item.updatedAt = Date.now();
+            
+            const childBarcode = item.barcode + '-' + Math.floor(100 + Math.random() * 900);
+            const childItem = {
+              id: 'itm_' + Date.now() + Math.random().toString(36).slice(2, 5).toUpperCase(),
+              name: item.name,
+              category: item.category,
+              quantity: 1,
+              barcode: childBarcode,
+              department: item.department || '',
+              location: item.location || '',
+              notes: item.notes || '',
+              status: 'out',
+              assignedTo: oldAssignedTo,
+              checkedOutAt: oldCheckedOutAt,
+              expirationDate: oldExpirationDate,
+              visibleToUsers: item.visibleToUsers
+            };
+            
+            items.unshift(childItem);
+            migratedLocal = true;
+          }
+        }
+        if (migratedLocal) {
+          await saveItems();
+          loadCompanyData();
+        }
+        
+        // Auto-checkin expired assets in Local Storage
+        let expiredFound = false;
+        for (const item of items) {
+          if (item.status === 'out' && item.expirationDate && item.expirationDate <= Date.now()) {
+            console.log("Auto-Checkin (Local): Session expired for asset", item.name);
+            await this.checkIn(item.id, item.assignedTo, true);
+            expiredFound = true;
+          }
+        }
+        if (expiredFound) {
+          loadCompanyData();
+        }
       }
     },
 
@@ -731,53 +876,175 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
 
     checkOut: async function(id, assignedTo, note) {
       if (this.isSupabase) {
-        await this.client.from('items').update({
-          status: 'out',
-          assigned_to: assignedTo,
-          updated_at: new Date().toISOString()
-        }).eq('id', id);
-        
+        const activeEmps = await this.getEmployees();
+        const target = activeEmps.find(e => e.name.toLowerCase() === assignedTo.toLowerCase());
+        const isTargetAdmin = (target && (target.adminId || target.role === 'admin')) || (currentUser && currentUser.name.toLowerCase() === assignedTo.toLowerCase() && currentUser.role === 'admin');
+        const months = isTargetAdmin ? 6 : 3;
+        const now = new Date();
+        const exp = new Date();
+        exp.setMonth(now.getMonth() + months);
+
         const item = items.find(i => i.id === id);
         if (item) {
-          await this.addLogEntry('checked-out', item, note || ('To: ' + assignedTo));
+          if (item.quantity > 1) {
+            await this.client.from('items').update({
+              quantity: item.quantity - 1,
+              updated_at: now.toISOString()
+            }).eq('id', id);
+            
+            const childId = 'itm_' + Date.now() + Math.random().toString(36).slice(2, 5).toUpperCase();
+            const childBarcode = item.barcode + '-' + Math.floor(100 + Math.random() * 900);
+            
+            const childItem = {
+              id: childId,
+              name: item.name,
+              category: item.category,
+              quantity: 1,
+              barcode: childBarcode,
+              department: item.department || '',
+              location: item.location || '',
+              notes: item.notes || '',
+              status: 'out',
+              assigned_to: assignedTo,
+              checked_out_at: now.toISOString(),
+              expiration_date: exp.toISOString(),
+              visible_to_users: item.visibleToUsers,
+              company_id: currentUser.companyId
+            };
+            
+            await this.client.from('items').insert(childItem);
+            await this.addLogEntry('checked-out', { id: childId, name: item.name, barcode: childBarcode }, note || ('To: ' + assignedTo + ' (1 unit from stock)'));
+          } else {
+            await this.client.from('items').update({
+              status: 'out',
+              assigned_to: assignedTo,
+              checked_out_at: now.toISOString(),
+              expiration_date: exp.toISOString(),
+              updated_at: now.toISOString()
+            }).eq('id', id);
+            
+            await this.addLogEntry('checked-out', item, note || ('To: ' + assignedTo));
+          }
         }
       } else {
+        const company = db.companies[currentUser.company];
+        const activeEmps = company ? (company.employees || []) : [];
+        const target = activeEmps.find(e => e.name.toLowerCase() === assignedTo.toLowerCase());
+        const isTargetAdmin = (target && (target.adminId || target.role === 'admin')) || (currentUser && currentUser.name.toLowerCase() === assignedTo.toLowerCase() && currentUser.role === 'admin');
+        const months = isTargetAdmin ? 6 : 3;
+        const now = new Date();
+        const exp = new Date();
+        exp.setMonth(now.getMonth() + months);
+
         const item = items.find(i => i.id === id);
         if (item) {
-          item.status = 'out';
-          item.assignedTo = assignedTo;
-          item.updatedAt = Date.now();
-          await saveItems();
-          addLogEntry('checked-out', item, note ? note : ('To: '+assignedTo));
+          if (item.quantity > 1) {
+            item.quantity -= 1;
+            const childBarcode = item.barcode + '-' + Math.floor(100 + Math.random() * 900);
+            const childItem = {
+              id: 'itm_' + Date.now() + Math.random().toString(36).slice(2, 5).toUpperCase(),
+              name: item.name,
+              category: item.category,
+              quantity: 1,
+              barcode: childBarcode,
+              department: item.department || '',
+              location: item.location || '',
+              notes: item.notes || '',
+              status: 'out',
+              assignedTo: assignedTo,
+              checkedOutAt: now.getTime(),
+              expirationDate: exp.getTime(),
+              visibleToUsers: item.visibleToUsers
+            };
+            
+            items.unshift(childItem);
+            await saveItems();
+            addLogEntry('checked-out', childItem, note ? note : ('To: '+assignedTo + ' (1 unit from stock)'));
+          } else {
+            item.status = 'out';
+            item.assignedTo = assignedTo;
+            item.checkedOutAt = now.getTime();
+            item.expirationDate = exp.getTime();
+            item.updatedAt = now.getTime();
+            await saveItems();
+            addLogEntry('checked-out', item, note ? note : ('To: '+assignedTo));
+          }
         }
       }
     },
 
     checkIn: async function(id, returnedFrom, isSelfReturn) {
       if (this.isSupabase) {
-        await this.client.from('items').update({
-          status: 'in',
-          assigned_to: '',
-          updated_at: new Date().toISOString()
-        }).eq('id', id);
-        
         const item = items.find(i => i.id === id);
         if (item) {
-          const logNote = isSelfReturn ? 'Self check-out (returned) by user' : (returnedFrom ? 'From: ' + returnedFrom : '');
-          await this.addLogEntry('checked-in', item, logNote);
+          const hyphenIdx = item.barcode.lastIndexOf('-');
+          let parentItem = null;
+          if (hyphenIdx > 0) {
+            const parentBarcode = item.barcode.substring(0, hyphenIdx);
+            parentItem = items.find(i => i.barcode === parentBarcode);
+          }
+          
+          if (parentItem) {
+            await this.client.from('items').update({
+              quantity: parentItem.quantity + 1,
+              status: 'in',
+              assigned_to: '',
+              checked_out_at: null,
+              expiration_date: null,
+              updated_at: new Date().toISOString()
+            }).eq('id', parentItem.id);
+            
+            await this.client.from('items').delete().eq('id', id);
+            
+            const logNote = isSelfReturn ? 'Self check-in (returned) by user' : (returnedFrom ? 'From: ' + returnedFrom : '');
+            await this.addLogEntry('checked-in', parentItem, logNote + ' (restored to stock)');
+          } else {
+            await this.client.from('items').update({
+              status: 'in',
+              assigned_to: '',
+              checked_out_at: null,
+              expiration_date: null,
+              updated_at: new Date().toISOString()
+            }).eq('id', id);
+            
+            const logNote = isSelfReturn ? 'Self check-in (returned) by user' : (returnedFrom ? 'From: ' + returnedFrom : '');
+            await this.addLogEntry('checked-in', item, logNote);
+          }
         }
       } else {
         const item = items.find(i => i.id === id);
         if (item) {
-          item.status = 'in';
-          item.assignedTo = '';
-          item.updatedAt = Date.now();
-          await saveItems();
+          const hyphenIdx = item.barcode.lastIndexOf('-');
+          let parentItem = null;
+          if (hyphenIdx > 0) {
+            const parentBarcode = item.barcode.substring(0, hyphenIdx);
+            parentItem = items.find(i => i.barcode === parentBarcode);
+          }
           
-          if (!isSelfReturn) {
-            addLogEntry('checked-in', item, returnedFrom ? ('From: '+returnedFrom) : '');
+          if (parentItem) {
+            parentItem.quantity += 1;
+            parentItem.status = 'in';
+            parentItem.assignedTo = '';
+            parentItem.checkedOutAt = null;
+            parentItem.expirationDate = null;
+            items = items.filter(i => i.id !== id);
+            await saveItems();
+            
+            const logNote = isSelfReturn ? 'Self check-in (returned) by user' : (returnedFrom ? 'From: ' + returnedFrom : '');
+            addLogEntry('checked-in', parentItem, logNote + ' (restored to stock)');
           } else {
-            addLogEntry('checked-in', item, `Self check-out (returned) by user`);
+            item.status = 'in';
+            item.assignedTo = '';
+            item.checkedOutAt = null;
+            item.expirationDate = null;
+            item.updatedAt = Date.now();
+            await saveItems();
+            
+            if (!isSelfReturn) {
+              addLogEntry('checked-in', item, returnedFrom ? ('From: '+returnedFrom) : '');
+            } else {
+              addLogEntry('checked-in', item, `Self check-in (returned) by user`);
+            }
           }
         }
       }
@@ -1250,6 +1517,7 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
       `;
     } else {
       html += `
+        <li class="navitem" data-view="dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>Dashboard</li>
         <li class="navitem" data-view="inventory"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8V21H3V8"/><path d="M1 3H23V8H1z"/><path d="M10 12H14"/></svg>Inventory</li>
         <li class="navitem" data-view="scan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V4a1 1 0 011-1h3M17 3h3a1 1 0 011 1v3M21 17v3a1 1 0 01-1 1h-3M7 21H4a1 1 0 01-1-1v-3"/><line x1="4" y1="12" x2="20" y2="12"/></svg>Scan</li>
         <li class="navitem" data-view="log"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="9"/></svg>Activity</li>
@@ -1276,7 +1544,7 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     saveSession(currentUser);
     
     stopScanner();
-    currentView = newRole === 'admin' ? 'dashboard' : 'inventory';
+    currentView = 'dashboard';
     
     showToast(`Switched to ${newRole === 'admin' ? 'Admin Mode' : 'User Mode'}.`);
     render();
@@ -1365,8 +1633,149 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
 
   /* ============ DASHBOARD ============ */
   function renderDashboard(){
-    const total = items.length;
-    const checkedOut = items.filter(i=>i.status==='out').length;
+    const myAssets = items.filter(i => i.status === 'out' && i.assignedTo.toLowerCase() === currentUser.name.toLowerCase());
+    
+    function getSessionDateTime(ts) {
+      if (!ts) return { date: '—', time: '—' };
+      const d = new Date(ts);
+      const dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      const timeStr = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+      return { date: dateStr, time: timeStr };
+    }
+
+    // Calculate reminders for assets expiring in the last 5 days
+    const alertsHtml = myAssets.map(asset => {
+      let endTs = asset.expirationDate;
+      if (!endTs && asset.checkedOutAt) {
+        const isTargetAdmin = currentUser && currentUser.adminId;
+        const months = isTargetAdmin ? 6 : 3;
+        const d = new Date(asset.checkedOutAt);
+        d.setMonth(d.getMonth() + months);
+        endTs = d.getTime();
+      }
+      if (!endTs) return '';
+      
+      const msLeft = endTs - Date.now();
+      const daysLeft = Math.ceil(msLeft / (1000 * 60 * 60 * 24));
+      if (daysLeft <= 5) {
+        const urgentColor = daysLeft <= 1 ? 'var(--danger)' : '#856404';
+        const urgentBg = daysLeft <= 1 ? '#f8d7da' : '#fff3cd';
+        const urgentBorder = daysLeft <= 1 ? '#f5c6cb' : '#ffeeba';
+        return `
+          <div style="background:${urgentBg}; color:${urgentColor}; border:1px solid ${urgentBorder}; border-radius:8px; padding:12px 16px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; font-size:13px; box-shadow:0 1px 2px rgba(0,0,0,0.05);">
+            <div style="line-height:1.4;">
+              <strong>Session Alert:</strong> ${daysLeft <= 0 ? 'Expired today!' : `${daysLeft} day${daysLeft===1?'':'s'} left`} before your session for <strong>"${esc(asset.name)}"</strong> expires. Extend your session before it is automatically checked back in.
+            </div>
+            <button class="btn btn-sm" style="margin-left:14px; font-size:12px; padding:4px 8px; background:${urgentColor}; border-color:${urgentColor}; color:#fff;" onclick="__app.openDetailModal('${asset.id}', true)">Extend Now</button>
+          </div>
+        `;
+      }
+      return '';
+    }).join('');
+
+    const myAssetsHtml = myAssets.length ? `
+      <div class="panel" style="margin-bottom:20px; grid-column:1/-1;">
+        <h3>My Checked-Out Assets (${myAssets.length})</h3>
+        <p style="font-size:12.5px; color:var(--ink-soft); margin-bottom:16px; line-height:1.4;">
+          Below are the devices currently checked out to your account.
+        </p>
+        <div style="display:grid; gap:16px; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));">
+          ${myAssets.map(asset => {
+            let startTs = asset.checkedOutAt;
+            let endTs = asset.expirationDate;
+            if (!startTs) {
+              startTs = asset.updatedAt || Date.now();
+            }
+            if (!endTs) {
+              const isTargetAdmin = currentUser && currentUser.adminId;
+              const months = isTargetAdmin ? 6 : 3;
+              const d = new Date(startTs);
+              d.setMonth(d.getMonth() + months);
+              endTs = d.getTime();
+            }
+            const start = getSessionDateTime(startTs);
+            const end = getSessionDateTime(endTs);
+            
+            return `
+              <div class="asset-card" style="display:flex; flex-direction:column; padding:16px; border:1px solid var(--line-strong); border-radius:12px; background:#fff; position:relative; box-shadow:0 2px 8px rgba(0,0,0,0.04);">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px;">
+                  <div>
+                    <span style="font-size:11px; text-transform:uppercase; font-weight:600; color:var(--ink-soft); display:block; margin-bottom:2px;">${esc(asset.category)}</span>
+                    <h4 style="margin:0 0 4px 0; font-size:16px; font-weight:700; color:var(--ink);">${esc(asset.name)}</h4>
+                    <div style="font-size:12px; color:var(--ink-soft); font-family:'IBM Plex Mono', monospace;">ID: ${esc(asset.barcode)}</div>
+                  </div>
+                  <button class="btn btn-sm btn-primary" onclick="__app.openDetailModal('${asset.id}', true)" style="font-size:12px; padding:6px 12px;">Manage / Extend</button>
+                </div>
+                
+                <hr style="border:0; border-top:1px solid var(--line-strong); margin:12px 0;">
+                
+                <div style="display:flex; justify-content:space-between; gap:20px; text-align:left;">
+                  <div style="flex:1;">
+                    <div style="font-size:11px; text-transform:uppercase; font-weight:600; color:var(--ink-soft); margin-bottom:4px;">Session Start</div>
+                    <div style="font-size:13.5px; font-weight:600; color:var(--ink);">${start.date}</div>
+                    <div style="font-size:11.5px; color:var(--ink-soft); margin-top:2px;">${start.time}</div>
+                  </div>
+                  
+                  <div style="flex:1; text-align:right; border-left:1px dashed var(--line-strong); padding-left:20px;">
+                    <div style="font-size:11px; text-transform:uppercase; font-weight:600; color:var(--ink-soft); margin-bottom:4px;">Session End</div>
+                    <div style="font-size:13.5px; font-weight:600; color:var(--danger);">${end.date}</div>
+                    <div style="font-size:11.5px; color:var(--ink-soft); margin-top:2px;">${end.time}</div>
+                  </div>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    ` : '';
+
+    const isAdmin = currentUser && currentUser.role === 'admin';
+    
+    if (!isAdmin) {
+      // User Mode Dashboard
+      return `
+        <div class="topbar">
+          <div>
+            <div class="pagetitle">My Dashboard</div>
+            <div class="pagesub">Welcome back, ${esc(currentUser.name)}</div>
+          </div>
+          <div class="stats-row">
+            <div class="stat-chip"><div class="n">${myAssets.length}</div><div class="l">My Checked-Out Assets</div></div>
+            <div class="stat-chip"><div class="n">${myAssets.filter(a => a.expirationDate && (a.expirationDate - Date.now() <= 5*24*60*60*1000)).length}</div><div class="l">Urgent Renewals</div></div>
+          </div>
+        </div>
+
+        ${alertsHtml ? `<div style="margin-bottom:20px;">${alertsHtml}</div>` : ''}
+
+        <div class="dash-grid">
+          ${myAssets.length ? myAssetsHtml : `
+            <div class="panel">
+              <h3>My Checked-Out Assets</h3>
+              <div class="empty-state">
+                <div class="display">No assets checked out to you</div>
+                Scan a barcode or browse the inventory to check out equipment.
+              </div>
+            </div>
+          `}
+
+          <div class="panel">
+            <h3>Quick Actions</h3>
+            <p style="font-size:12.5px; color:var(--ink-soft); margin-bottom:14px; line-height:1.4;">
+              Access standard scanner and browser tools to manage your devices.
+            </p>
+            <div class="quick-actions" style="display:flex; flex-direction:column; gap:10px;">
+              <button class="btn btn-primary" style="justify-content:center;" onclick="__app.goto('scan')">${iconScan()}Scan to Check Out</button>
+              <button class="btn" style="justify-content:center;" onclick="__app.goto('inventory')">${iconList()}Browse Inventory List</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // Admin Mode Dashboard
+    const parentItems = items.filter(i => i.barcode.split('-').length <= 2);
+    const total = parentItems.length;
+    const checkedOut = parentItems.filter(i => i.status === 'out').length;
     const checkedIn = total - checkedOut;
     const totalQty = items.reduce((a,i)=>a+Number(i.quantity||0),0);
 
@@ -1390,6 +1799,10 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
           <div class="stat-chip"><div class="n">${totalQty}</div><div class="l">Total Qty</div></div>
         </div>
       </div>
+
+      ${alertsHtml ? `<div style="margin-bottom:20px;">${alertsHtml}</div>` : ''}
+      ${myAssetsHtml}
+
       <div class="dash-grid">
         <div class="panel">
           <h3>Recent Activity</h3>
@@ -1424,27 +1837,50 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     const verb = {
       'checked-in':'checked in','checked-out':'checked out','added':'added','edited':'edited','deleted':'deleted'
     }[l.action] || l.action;
-    return `<div class="log-row">
+
+    const dateStr = new Date(l.ts).toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    });
+
+    return `<div class="log-row" style="padding:14px 16px;">
       <div class="log-dot ${dotClass}"></div>
       <div class="log-main">
-        <div class="t"><b>${esc(l.by)}</b> ${verb} <b>${esc(l.itemName||'an item')}</b></div>
-        ${l.note ? `<div class="m">${esc(l.note)}</div>` : ''}
+        <div class="t" style="font-size:13.5px;"><b>${esc(l.by)}</b> ${verb} <b>${esc(l.itemName||'an item')}</b></div>
+        ${l.note ? `<div class="m" style="font-size:12px; margin-top:4px;">${esc(l.note)}</div>` : ''}
       </div>
-      <div class="log-time">${timeAgo(l.ts)}</div>
+      <div class="log-time" style="text-align:right; font-size:11.5px; line-height:1.4;">
+        <span style="font-weight:600; display:block;">${timeAgo(l.ts)}</span>
+        <span style="color:var(--ink-soft); font-size:10.5px; display:block; margin-top:2px;">${dateStr}</span>
+      </div>
     </div>`;
   }
 
   /* ============ INVENTORY ============ */
+  function getItemTotalQty(parentItem) {
+    const prefix = parentItem.barcode + '-';
+    const childrenCount = items.filter(i => i.barcode.startsWith(prefix) && i.status === 'out').length;
+    return parentItem.quantity + childrenCount;
+  }
+
   function getFilteredItems(){
     const q = searchQuery.trim().toLowerCase();
-    let list = items;
+    let list = items.filter(i => i.barcode.split('-').length <= 2);
     
     if (currentUser && currentUser.role !== 'admin') {
       list = list.filter(i => i.visibleToUsers !== false);
     }
     
     return list.filter(i=>{
-      if(statusFilter!=='all' && i.status!==statusFilter) return false;
+      const availableQty = i.status === 'out' ? 0 : i.quantity;
+      const isAvailable = availableQty > 0;
+      
+      if(statusFilter==='in' && !isAvailable) return false;
+      if(statusFilter==='out' && isAvailable) return false;
       if(categoryFilter!=='all' && i.category!==categoryFilter) return false;
       if(q && !(i.name.toLowerCase().includes(q) || i.barcode.toLowerCase().includes(q) || (i.department||'').toLowerCase().includes(q) || (i.assignedTo||'').toLowerCase().includes(q))) return false;
       return true;
@@ -1457,7 +1893,7 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
       <div class="topbar">
         <div>
           <div class="pagetitle">Inventory</div>
-          <div class="pagesub">${items.length} asset${items.length===1?'':'s'} tracked</div>
+          <div class="pagesub">${items.filter(i => i.barcode.split('-').length <= 2).length} asset${items.filter(i => i.barcode.split('-').length <= 2).length===1?'':'s'} tracked</div>
         </div>
         ${isAdmin ? `<button class="btn btn-primary" onclick="__app.openAddModal()">${iconPlus()}Add Asset</button>` : ''}
       </div>
@@ -1496,18 +1932,26 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
   }
 
   function assetTagHtml(i){
+    const totalQty = getItemTotalQty(i);
+    const availableQty = i.status === 'out' ? 0 : i.quantity;
+    const isAvailable = availableQty > 0;
+    
+    const stripeClass = isAvailable ? 'in' : 'out';
+    const statusText = isAvailable ? 'Available' : 'Checked Out';
+    const statusStyle = isAvailable ? '' : 'color:#721c24; background-color:#f8d7da; border-color:#f5c6cb;';
+
     return `
       <div class="asset-tag" data-id="${i.id}">
-        <div class="stripe ${i.status}"></div>
+        <div class="stripe ${stripeClass}"></div>
         <div class="asset-tag-body">
           <div class="rivet-hole"></div>
-          <div class="status-pill ${i.status}">${i.status==='in'?'In Stock':'Checked Out'}</div>
+          <div class="status-pill ${stripeClass}" style="${statusStyle}">${statusText}</div>
           <div class="name">${esc(i.name)}</div>
           <div class="cat">${esc(i.category)}${i.department ? ' · '+esc(i.department) : ''}</div>
           <div class="code mono">${esc(i.barcode)}</div>
           <div class="tag-meta">
-            <div>${i.status==='out' ? 'With '+esc(i.assignedTo||'—') : esc(i.location||'—')}</div>
-            <div class="qty">×${esc(i.quantity)}</div>
+            <div>${esc(i.location||'—')}</div>
+            <div class="qty">×${totalQty}</div>
           </div>
         </div>
       </div>
@@ -1627,9 +2071,17 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     if(item){
       if (!isAdmin) {
         if (item.status === 'in') {
+          const isUserAdmin = !!(currentUser && currentUser.adminId);
+          if (!isUserAdmin) {
+            const categoryCount = items.filter(i => i.status === 'out' && i.assignedTo.toLowerCase() === currentUser.name.toLowerCase() && i.category === item.category).length;
+            if (categoryCount >= 3) {
+              showToast(`Limit exceeded: You already have 3 checked-out assets in the "${item.category}" category. Please return one first.`);
+              return;
+            }
+          }
           await DbService.checkOut(item.id, currentUser.name, 'Self-checkout via scan');
           await DbService.loadAllData();
-          showToast(`Asset "${item.name}" checked in to you successfully.`);
+          showToast(`Asset "${item.name}" checked out to you successfully.`);
           openDetailModal(item.id);
           render();
         } else if (item.assignedTo === currentUser.name) {
@@ -1653,15 +2105,33 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
 
   /* ============ ACTIVITY LOG VIEW ============ */
   function renderLog(){
+    const personalLog = log.filter(l => l.by && l.by.toLowerCase() === currentUser.name.toLowerCase());
+    
     return `
       <div class="topbar">
         <div>
           <div class="pagetitle">Activity Log</div>
-          <div class="pagesub">${log.length} event${log.length===1?'':'s'} recorded</div>
+          <div class="pagesub">Track company-wide and personal asset events</div>
         </div>
       </div>
-      ${log.length ? `<div class="log-list">${log.map(logRowHtml).join('')}</div>` :
-        `<div class="empty-state"><div class="display">No activity yet</div>Check-ins, check-outs, and edits will appear here.</div>`}
+      
+      <div class="panel" style="margin-bottom:24px;">
+        <h3>Company Activity (${log.length})</h3>
+        <p style="font-size:12.5px; color:var(--ink-soft); margin-bottom:14px; line-height:1.4;">
+          A record of all additions, edits, check-outs, and returns for ${esc(currentUser.company)}.
+        </p>
+        ${log.length ? `<div class="log-list">${log.map(logRowHtml).join('')}</div>` :
+          `<div class="empty-state"><div class="display">No company activity yet</div></div>`}
+      </div>
+
+      <div class="panel">
+        <h3>My Personal Activity (${personalLog.length})</h3>
+        <p style="font-size:12.5px; color:var(--ink-soft); margin-bottom:14px; line-height:1.4;">
+          A record of your own check-outs, returns, and session updates.
+        </p>
+        ${personalLog.length ? `<div class="log-list">${personalLog.map(logRowHtml).join('')}</div>` :
+          `<div class="empty-state"><div class="display">No personal activity yet</div>Start scanning or checking out assets to see your logs.</div>`}
+      </div>
     `;
   }
 
@@ -2125,9 +2595,13 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     render();
   }
 
-  function openDetailModal(id){
+  function openDetailModal(id, fromDashboard){
     const item = items.find(i=>i.id===id);
     if(!item) return;
+
+    const totalQty = getItemTotalQty(item);
+    const availableQty = item.status === 'out' ? 0 : item.quantity;
+    const isAvailable = availableQty > 0;
 
     const isBlocked = checkBlocked();
     const isAdmin = currentUser && currentUser.role === 'admin';
@@ -2136,51 +2610,103 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     let actionHtml = '';
     let footerHtml = '';
     
-    if (isAdmin) {
-      if (item.status === 'in') {
-        actionHtml = `
-          <div class="field"><label for="f-assign">Check out to (name)</label><input id="f-assign" placeholder="Person or team"></div>
-          <div class="field"><label for="f-checkout-note">Note (optional)</label><input id="f-checkout-note" placeholder="e.g. Site visit, returns Friday"></div>
-          <button class="btn btn-primary" style="width:100%; justify-content:center;" onclick="__app.doCheckOut('${item.id}')">${iconOut()}Check Out</button>
-        `;
-      } else {
-        actionHtml = `
-          <button class="btn btn-primary" style="width:100%; justify-content:center;" onclick="__app.doCheckIn('${item.id}')">${iconIn()}Check In</button>
-        `;
-      }
-      footerHtml = `
-        <button class="btn btn-danger" onclick="__app.doDelete('${item.id}')">${iconTrash()}Delete</button>
-        <button class="btn" onclick="__app.openEditModal('${item.id}')">${iconEdit()}Edit</button>
-      `;
-    } else {
-      if (isBlocked) {
-        actionHtml = `
-          <div style="background:var(--status-out-bg); color:var(--status-out); border:1px solid var(--status-out); border-radius:6px; padding:10px; font-size:12px; text-align:center;">
-            Your account has been blocked. Actions are disabled.
-          </div>
-        `;
-      } else if (item.status === 'in') {
-        actionHtml = `
-          <div style="background:var(--surface-alt); border:1px dashed var(--line-strong); border-radius:6px; padding:12px; font-size:13px; text-align:center; color:var(--ink-soft);">
-            To check in (take possession of) this asset, scan its barcode in the <strong>Scan</strong> tab.
-          </div>
-        `;
-      } else if (isAssignedToMe) {
-        actionHtml = `
-          <button class="btn btn-primary" style="width:100%; justify-content:center;" onclick="__app.doCheckIn('${item.id}')">${iconIn()}Check Out Asset (Return)</button>
-        `;
-      } else {
-        actionHtml = `
-          <div style="background:var(--status-out-bg); color:var(--status-out); border:1px solid var(--status-out); border-radius:6px; padding:10px; font-size:12px; text-align:center;">
-            This asset is checked out to ${esc(item.assignedTo)}.
-          </div>
-        `;
-      }
+    if (fromDashboard) {
+      const daysLeft = item.expirationDate ? Math.ceil((item.expirationDate - Date.now()) / (1000 * 60 * 60 * 24)) : 0;
+      const daysLabel = daysLeft > 0 ? `${daysLeft} days left` : `Expired`;
+      const canExtend = daysLeft <= 10;
       
+      actionHtml = `
+        <div style="border:1px solid var(--line-strong); border-radius:8px; padding:14px; background:var(--surface-alt); margin-bottom:14px;">
+          <h4 style="margin:0 0 6px 0; font-size:13px; font-weight:600;">Extend Your Session</h4>
+          <p style="font-size:12px; color:var(--ink-soft); margin:0 0 12px 0; line-height:1.4;">
+            This asset is checked out under your name. Current expiration: <strong>${item.expirationDate ? new Date(item.expirationDate).toLocaleDateString() : '—'}</strong> (${daysLabel}).
+          </p>
+          <div class="field" style="margin-bottom:12px;">
+            <label for="u-extend-months" style="font-size:11px; text-transform:uppercase; letter-spacing:0.03em;">Extension Period</label>
+            <select id="u-extend-months" style="padding:6px 10px; font-size:12.5px;">
+              <option value="1">Extend by 1 Month</option>
+              <option value="2">Extend by 2 Months</option>
+              <option value="3">Extend by 3 Months</option>
+            </select>
+          </div>
+          ${canExtend ? `
+            <button class="btn btn-primary" style="width:100%; justify-content:center; margin-bottom:10px;" onclick="__app.extendAssetSession('${item.id}')">${iconSave()}Extend Session</button>
+          ` : `
+            <button class="btn btn-primary" style="width:100%; justify-content:center; margin-bottom:10px; opacity:0.5; cursor:not-allowed;" disabled>${iconSave()}Extend Session</button>
+            <div style="font-size:11px; color:var(--ink-soft); text-align:center; margin-bottom:10px; margin-top:-6px;">Extension is available only in the last 10 days of your session.</div>
+          `}
+          <button class="btn btn-danger" style="width:100%; justify-content:center; background:var(--danger); border-color:var(--danger); color:#fff;" onclick="__app.doCheckIn('${item.id}')">${iconIn()}Return Asset (Check In)</button>
+        </div>
+      `;
       footerHtml = `
         <button class="btn" style="width:100%; justify-content:center;" onclick="__app.closeModal()">Close</button>
       `;
+    } else {
+      if (isAdmin) {
+        if (isAvailable) {
+          actionHtml = `
+            <div style="border:1px solid var(--line-strong); border-radius:8px; padding:14px; background:var(--surface-alt); margin-bottom:14px;">
+              <h4 style="margin:0 0 6px 0; font-size:13px; font-weight:600;">Check Out Asset</h4>
+              <div class="field" style="margin-bottom:8px;"><label for="f-assign" style="font-size:11px; text-transform:uppercase;">Check out to (name)</label><input id="f-assign" value="${esc(currentUser.name)}" placeholder="Person or team" style="padding:8px 10px; font-size:12.5px;"></div>
+              <div class="field" style="margin-bottom:12px;"><label for="f-checkout-note" style="font-size:11px; text-transform:uppercase;">Note (optional)</label><input id="f-checkout-note" placeholder="e.g. Site visit, returns Friday" style="padding:8px 10px; font-size:12.5px;"></div>
+              <button class="btn btn-primary" style="width:100%; justify-content:center; margin-bottom:12px;" onclick="__app.doCheckOut('${item.id}')">${iconOut()}Check Out</button>
+              <button class="btn" style="width:100%; justify-content:center; border-color:var(--accent); color:var(--accent); font-size:12.5px; padding:6px 12px;" onclick="__app.goto('scan'); __app.closeModal();">${iconScan()}Check Out using QR Code</button>
+            </div>
+          `;
+        } else {
+          actionHtml = `
+            <div style="background:#f8d7da; color:#721c24; border:1px solid #f5c6cb; border-radius:8px; padding:12px; font-size:13px; text-align:center; font-weight:500;">
+              This asset is not currently in stock or available.
+            </div>
+          `;
+        }
+        footerHtml = `
+          <button class="btn btn-danger" onclick="__app.doDelete('${item.id}')">${iconTrash()}Delete</button>
+          <button class="btn" onclick="__app.openEditModal('${item.id}')">${iconEdit()}Edit</button>
+        `;
+      } else {
+        if (isBlocked) {
+          actionHtml = `
+            <div style="background:var(--status-out-bg); color:var(--status-out); border:1px solid var(--status-out); border-radius:6px; padding:10px; font-size:12px; text-align:center;">
+              Your account has been blocked. Actions are disabled.
+            </div>
+          `;
+        } else if (isAvailable) {
+          actionHtml = `
+            <div style="border:1px solid var(--line-strong); border-radius:8px; padding:14px; background:var(--surface-alt); margin-bottom:14px;">
+              <h4 style="margin:0 0 6px 0; font-size:13px; font-weight:600;">Manual Check Out (Backup Option)</h4>
+              <p style="font-size:12px; color:var(--ink-soft); margin:0 0 12px 0; line-height:1.4;">
+                If the QR scanner is having trouble, confirm your Name and Office ID below to check out this asset manually.
+              </p>
+              <div class="field" style="margin-bottom:8px;">
+                <label for="u-checkout-name" style="font-size:11px; text-transform:uppercase; letter-spacing:0.03em;">Verify Full Name</label>
+                <input id="u-checkout-name" placeholder="Enter your full name" style="padding:8px 10px; font-size:12.5px;">
+              </div>
+              <div class="field" style="margin-bottom:12px;">
+                <label for="u-checkout-office-id" style="font-size:11px; text-transform:uppercase; letter-spacing:0.03em;">Verify Office ID</label>
+                <input id="u-checkout-office-id" placeholder="Enter your office ID" style="padding:8px 10px; font-size:12.5px; font-family:'IBM Plex Mono', monospace;">
+              </div>
+              <button class="btn btn-primary" style="width:100%; justify-content:center; margin-bottom:12px;" onclick="__app.doManualUserCheckOut('${item.id}')">${iconOut()}Manual Check Out</button>
+              <button class="btn" style="width:100%; justify-content:center; border-color:var(--accent); color:var(--accent); font-size:12.5px; padding:6px 12px;" onclick="__app.goto('scan'); __app.closeModal();">${iconScan()}Check Out using QR Code</button>
+            </div>
+          `;
+        } else {
+          actionHtml = `
+            <div style="background:#f8d7da; color:#721c24; border:1px solid #f5c6cb; border-radius:8px; padding:12px; font-size:13px; text-align:center; font-weight:500;">
+              This asset is not currently in stock or available.
+            </div>
+          `;
+        }
+        footerHtml = `
+          <button class="btn" style="width:100%; justify-content:center;" onclick="__app.closeModal()">Close</button>
+        `;
+      }
     }
+
+    const statusText = isAvailable ? 'Available' : 'Checked Out';
+    const statusStyle = isAvailable
+      ? 'color: #155724; background-color: #d4edda; border: 1px solid #c3e6cb;'
+      : 'color: #721c24; background-color: #f8d7da; border: 1px solid #f5c6cb;';
 
     document.getElementById('modal-root').innerHTML = `
       <div class="modal-overlay" id="modal-overlay">
@@ -2190,25 +2716,37 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
             <button class="modal-close" onclick="__app.closeModal()">×</button>
           </div>
           <div class="modal-body">
-            <div class="detail-status-row">
-              <span class="status-pill ${item.status}" style="position:static;">${item.status==='in'?'In Stock':'Checked Out'}</span>
+            <div class="detail-status-row" style="margin-bottom:14px; display:flex; align-items:center; gap:8px;">
+              <span class="status-pill" style="position:static; padding:4px 10px; font-size:12px; font-weight:600; border-radius:12px; ${statusStyle}">${statusText}</span>
               <span class="detail-code mono">${esc(item.barcode)}</span>
             </div>
             <div class="detail-grid">
               <div class="detail-item"><div class="l">Category</div><div class="v">${esc(item.category)}</div></div>
-              <div class="detail-item"><div class="l">Quantity</div><div class="v">${esc(item.quantity)}</div></div>
+              ${fromDashboard ? `
+                <div class="detail-item"><div class="l">Quantity</div><div class="v">1</div></div>
+              ` : `
+                <div class="detail-item"><div class="l">Total Quantity</div><div class="v">${totalQty}</div></div>
+                <div class="detail-item"><div class="l">Available Quantity</div><div class="v">${availableQty}</div></div>
+              `}
               <div class="detail-item"><div class="l">Department</div><div class="v">${esc(item.department)||'—'}</div></div>
               <div class="detail-item"><div class="l">Location</div><div class="v">${esc(item.location)||'—'}</div></div>
-              ${item.status==='out' ? `<div class="detail-item" style="grid-column:1/-1;"><div class="l">Checked out to</div><div class="v">${esc(item.assignedTo)||'—'}</div></div>` : ''}
+              ${fromDashboard ? `
+                <div class="detail-item" style="grid-column:1/-1;"><div class="l">Checked out to</div><div class="v">${esc(item.assignedTo)||'—'}</div></div>
+                <div class="detail-item"><div class="l">Checkout Date</div><div class="v">${item.checkedOutAt ? new Date(item.checkedOutAt).toLocaleDateString() : '—'}</div></div>
+                <div class="detail-item"><div class="l">Expiration Date</div><div class="v" style="color:var(--danger); font-weight:600;">${item.expirationDate ? new Date(item.expirationDate).toLocaleDateString() : '—'}</div></div>
+              ` : ''}
               ${item.notes ? `<div class="detail-item" style="grid-column:1/-1;"><div class="l">Notes</div><div class="v">${esc(item.notes)}</div></div>` : ''}
             </div>
 
             ${actionHtml}
 
-            <div class="qr-wrap">
-              <div id="qrcode-render"></div>
-              <div style="font-size:11.5px; color:var(--ink-soft);">Print this tag and attach it to the asset</div>
-            </div>
+            ${isAdmin ? `
+              <div class="qr-wrap" style="text-align:center; margin-top:20px; background:var(--surface-alt); padding:16px; border-radius:12px; border:1px solid var(--line-strong);">
+                <div id="qrcode-render" style="display:inline-block; padding:10px; background:#fff; border-radius:8px; border:1px solid var(--line-strong);"></div>
+                <div style="font-size:11.5px; color:var(--ink-soft); margin-top:10px; font-weight:500;">Print this tag and attach it to the asset</div>
+                <button class="btn btn-sm" style="margin-top:10px; font-size:11.5px; padding:4px 8px; justify-content:center; width:100%;" onclick="window.print()">Print QR Code</button>
+              </div>
+            ` : ''}
           </div>
           <div class="modal-foot">
             ${footerHtml}
@@ -2218,7 +2756,7 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     `;
     document.getElementById('modal-overlay').addEventListener('click', e=>{ if(e.target.id==='modal-overlay') closeModal(); });
     try{
-      if(typeof QRCode !== 'undefined'){
+      if(isAdmin && typeof QRCode !== 'undefined'){
         new QRCode(document.getElementById('qrcode-render'), { text: item.barcode, width: 116, height: 116, correctLevel: QRCode.CorrectLevel.M });
       }
     }catch(e){}
@@ -2310,6 +2848,18 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     const noteEl = document.getElementById('f-checkout-note');
     const assignedTo = assignEl ? assignEl.value.trim() : '';
     if(!assignedTo){ showToast('Enter who this is being checked out to.'); return; }
+
+    const activeEmployees = await DbService.getEmployees();
+    const targetEmp = activeEmployees.find(e => e.name.toLowerCase() === assignedTo.toLowerCase());
+    const isTargetAdmin = (targetEmp && (targetEmp.adminId || targetEmp.role === 'admin')) || (currentUser && currentUser.name.toLowerCase() === assignedTo.toLowerCase() && currentUser.role === 'admin');
+    
+    if (!isTargetAdmin) {
+      const categoryCount = items.filter(i => i.status === 'out' && i.assignedTo.toLowerCase() === assignedTo.toLowerCase() && i.category === item.category).length;
+      if (categoryCount >= 3) {
+        showToast(`Limit exceeded: ${assignedTo} already has 3 checked-out assets in the "${item.category}" category.`);
+        return;
+      }
+    }
     
     const note = noteEl && noteEl.value.trim() ? noteEl.value.trim() : '';
     await DbService.checkOut(id, assignedTo, note);
@@ -2317,6 +2867,88 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     
     closeModal();
     showToast(item.name + ' checked out to ' + assignedTo + '.');
+    render();
+  }
+
+  async function doManualUserCheckOut(id) {
+    if (checkBlocked()) {
+      showToast('Action denied: Your account is blocked.');
+      closeModal();
+      return;
+    }
+    const item = items.find(i=>i.id===id);
+    if(!item) return;
+    
+    const typedName = document.getElementById('u-checkout-name').value.trim();
+    const typedOfficeId = document.getElementById('u-checkout-office-id').value.trim();
+    
+    if (!typedName || !typedOfficeId) {
+      showToast('Please enter both your Name and Office ID.');
+      return;
+    }
+    
+    if (typedName.toLowerCase() !== currentUser.name.toLowerCase() || typedOfficeId.toLowerCase() !== currentUser.officeId.toLowerCase()) {
+      showToast('Error: Entered credentials do not match your current login session.');
+      return;
+    }
+
+    const isUserAdmin = !!(currentUser && currentUser.adminId);
+    if (!isUserAdmin) {
+      const categoryCount = items.filter(i => i.status === 'out' && i.assignedTo.toLowerCase() === currentUser.name.toLowerCase() && i.category === item.category).length;
+      if (categoryCount >= 3) {
+        showToast(`Limit exceeded: You already have 3 checked-out assets in the "${item.category}" category. Please return one first.`);
+        return;
+      }
+    }
+    
+    await DbService.checkOut(id, currentUser.name, 'Manual backup checkout via inventory');
+    await DbService.loadAllData();
+    
+    closeModal();
+    showToast(`Asset "${item.name}" checked out to you successfully.`);
+    render();
+  }
+
+  async function extendAssetSession(id) {
+    if (checkBlocked()) {
+      showToast('Action denied: Your account is blocked.');
+      closeModal();
+      return;
+    }
+    const item = items.find(i=>i.id===id);
+    if(!item) return;
+
+    // Check if within last 10 days
+    const daysLeft = item.expirationDate ? Math.ceil((item.expirationDate - Date.now()) / (1000 * 60 * 60 * 24)) : 0;
+    if (daysLeft > 10) {
+      showToast('Action denied: Extensions are only allowed in the last 10 days.');
+      return;
+    }
+    
+    const extendSelect = document.getElementById('u-extend-months');
+    const months = parseInt(extendSelect ? extendSelect.value : '1') || 1;
+    
+    // Calculate new expiration date
+    const currentExp = item.expirationDate ? new Date(item.expirationDate) : new Date();
+    currentExp.setMonth(currentExp.getMonth() + months);
+    
+    if (DbService.isSupabase) {
+      await DbService.client.from('items').update({
+        expiration_date: currentExp.toISOString(),
+        updated_at: new Date().toISOString()
+      }).eq('id', id);
+    } else {
+      item.expirationDate = currentExp.getTime();
+      item.updatedAt = Date.now();
+      await saveItems();
+    }
+    
+    const logNote = `Extended session by ${months} month(s). New expiration: ${currentExp.toLocaleDateString()}`;
+    await DbService.addLogEntry('edited', item, logNote);
+    await DbService.loadAllData();
+    
+    closeModal();
+    showToast(`Session for "${item.name}" extended by ${months} month(s).`);
     render();
   }
 
@@ -2337,7 +2969,7 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     if (isAdmin) {
       showToast(item.name + ' checked back in.');
     } else {
-      showToast(`Asset "${item.name}" checked out / returned successfully.`);
+      showToast(`Asset "${item.name}" returned successfully.`);
     }
     
     closeModal();
@@ -2894,7 +3526,7 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     saveSession(signupResult.user);
     await DbService.loadAllData();
     
-    currentView = signupResult.user.role === 'admin' ? 'dashboard' : 'inventory';
+    currentView = 'dashboard';
     
     tempSignup = null;
     simulatedOtp = '';
@@ -2955,7 +3587,8 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     doCheckOut, doCheckIn, doDelete, toggleBlockUser,
     addCertifiedDesignation, removeCertifiedDesignation, runSync,
     openAddDirectoryModal, submitAddDirectory, openEditDirectoryModal,
-    submitEditDirectory, openBulkImportModal, submitBulkImport, doDeleteDirectory
+    submitEditDirectory, openBulkImportModal, submitBulkImport, doDeleteDirectory,
+    doManualUserCheckOut, extendAssetSession
   };
 
   async function init(){
@@ -2974,7 +3607,7 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
         showToast('Your account has been blocked by the admin.');
         return;
       }
-      currentView = currentUser.role === 'admin' ? 'dashboard' : 'inventory';
+      currentView = 'dashboard';
       document.getElementById('app').style.display = 'flex';
       document.getElementById('auth-root').style.display = 'none';
       render();
