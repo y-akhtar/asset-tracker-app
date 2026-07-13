@@ -3874,9 +3874,20 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
           to_email: signupData.email,
           email: signupData.email,
           otp: simulatedOtp,
+          OTP: simulatedOtp,
+          Otp: simulatedOtp,
+          otpCode: simulatedOtp,
           otp_code: simulatedOtp,
+          OTP_CODE: simulatedOtp,
           code: simulatedOtp,
-          verification_code: simulatedOtp
+          CODE: simulatedOtp,
+          Code: simulatedOtp,
+          verificationCode: simulatedOtp,
+          verification_code: simulatedOtp,
+          VERIFICATION_CODE: simulatedOtp,
+          message: "Your verification code is: " + simulatedOtp,
+          MESSAGE: "Your verification code is: " + simulatedOtp,
+          Message: "Your verification code is: " + simulatedOtp
         }
       };
 
