@@ -99,6 +99,34 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     return { countryCode: '+91', localNumber: fullPhone };
   }
 
+  function getDesignationRank(post) {
+    if (!post) return 5;
+    const lower = post.toLowerCase();
+    
+    // Level 1: Executive Level
+    const level1 = ['ceo', 'cto', 'cio', 'coo', 'cfo', 'cpo', 'managing director', 'president', 'chairperson', 'founder', 'board', 'c-suite'];
+    if (level1.some(w => lower.includes(w))) return 1;
+    
+    // Level 2: Senior Management
+    const level2 = ['svp', 'vp', 'vice president', 'director', 'head of', 'head'];
+    if (level2.some(w => lower.includes(w))) return 2;
+    
+    // Level 3: Middle Management
+    const level3 = ['manager', 'assistant manager'];
+    if (level3.some(w => lower.includes(w))) return 3;
+    
+    // Level 4: Technical Staff & Supervisory
+    const level4 = ['principal', 'architect', 'staff', 'lead', 'supervisor', 'team lead', 'tech lead'];
+    if (level4.some(w => lower.includes(w))) return 4;
+    
+    // Level 6: Entry Level & Training
+    const level6 = ['trainee', 'get', 'intern', 'graduate'];
+    if (level6.some(w => lower.includes(w))) return 6;
+    
+    // Level 5: Operational & Professional (Default)
+    return 5;
+  }
+
   function mapSpreadsheetColumns(headers) {
     const mapping = { officeId: -1, name: -1, designation: -1, officialPhone: -1, personalPhone: -1, email: -1 };
     if (!headers || !headers.length) return mapping;
@@ -2379,6 +2407,15 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     if (!currentUser || currentUser.role !== 'admin') return '';
     const employees = await DbService.getEmployees();
     const directory = await DbService.getDirectoryEmployees();
+    
+    directory.sort((a, b) => {
+      const rankA = getDesignationRank(a.designation);
+      const rankB = getDesignationRank(b.designation);
+      if (rankA !== rankB) {
+        return rankA - rankB;
+      }
+      return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
+    });
     
     let settingsHtml = '';
     if (isCompanyOwner()) {
