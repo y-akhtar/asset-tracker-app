@@ -2045,12 +2045,6 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     const checkedOut = parentItems.filter(i => i.status === 'out').length;
     const checkedIn = total - checkedOut;
     const totalQty = items.reduce((a,i)=>a+Number(i.quantity||0),0);
-
-    const catCounts = {};
-    items.forEach(i=>{ catCounts[i.category] = (catCounts[i.category]||0)+1; });
-    const catEntries = Object.entries(catCounts).sort((a,b)=>b[1]-a[1]).slice(0,6);
-    const maxCat = Math.max(1, ...catEntries.map(e=>e[1]));
-
     const recent = log.slice(0,6);
 
     return `
@@ -2077,15 +2071,6 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
             `<div class="empty-state"><div class="display">No activity yet</div>Add or scan an item to get started.</div>`}
         </div>
         <div>
-          <div class="panel" style="margin-bottom:16px;">
-            <h3>By Category</h3>
-            ${catEntries.length ? catEntries.map(([cat,n])=>`
-              <div class="cat-bar-row">
-                <div class="cn">${esc(cat)}</div>
-                <div class="cat-bar-track"><div class="cat-bar-fill" style="width:${(n/maxCat*100).toFixed(0)}%"></div></div>
-                <div class="cat-bar-n">${n}</div>
-              </div>`).join('') : `<div style="font-size:13px;color:var(--ink-soft);">No items yet.</div>`}
-          </div>
           <div class="panel">
             <h3>Quick Actions</h3>
             <div class="quick-actions">
