@@ -43,6 +43,7 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
 
   const COUNTRIES = [
     { name: 'India (+91)', code: '+91', digits: [10], placeholder: '98765 43210' },
+    { name: 'Landline (011)', code: '011', digits: [6, 7, 8], placeholder: '2345 6789' },
     { name: 'United States / Canada (+1)', code: '+1', digits: [10], placeholder: '201 555 0123' },
     { name: 'United Kingdom (+44)', code: '+44', digits: [10], placeholder: '7700 900077' },
     { name: 'Australia (+61)', code: '+61', digits: [9], placeholder: '412 345 678' },
