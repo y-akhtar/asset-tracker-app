@@ -108,7 +108,7 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     if (level1.some(w => lower.includes(w))) return 1;
     
     // Level 2: Senior Management
-    const level2 = ['svp', 'vp', 'vice president', 'director', 'head of', 'head'];
+    const level2 = ['svp', 'vp', 'vice president', 'director', 'head of', 'head', 'hod'];
     if (level2.some(w => lower.includes(w))) return 2;
     
     // Level 3: Middle Management
