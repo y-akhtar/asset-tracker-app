@@ -1830,8 +1830,8 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
   }
 
   async function render(){
-    setActiveNav();
     renderSidebarNav();
+    setActiveNav();
     
     const usernameEl = document.getElementById('sidebar-username');
     const userroleEl = document.getElementById('sidebar-userrole');
