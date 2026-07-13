@@ -98,6 +98,150 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     return { countryCode: '+91', localNumber: fullPhone };
   }
 
+  function mapSpreadsheetColumns(headers) {
+    const mapping = { officeId: -1, name: -1, designation: -1, officialPhone: -1, personalPhone: -1, email: -1 };
+    if (!headers || !headers.length) return mapping;
+    
+    headers.forEach((h, index) => {
+      if (h == null) return;
+      const lower = String(h).toLowerCase().replace(/[^a-z0-9]/g, '');
+      
+      if (lower.includes('officeid') || lower.includes('empid') || lower.includes('employeeid') || lower === 'id' || lower === 'code') {
+        mapping.officeId = index;
+      } else if (lower.includes('fullname') || lower === 'name' || lower.includes('empname') || lower.includes('employeename') || lower === 'person') {
+        mapping.name = index;
+      } else if (lower.includes('designation') || lower.includes('post') || lower === 'role' || lower === 'title' || lower.includes('job')) {
+        mapping.designation = index;
+      } else if (lower.includes('officialphone') || lower.includes('officephone') || (lower.includes('phone') && !lower.includes('personal')) || lower === 'tel' || lower.includes('contact') || lower === 'mobile') {
+        if (mapping.officialPhone === -1 || lower.includes('official') || lower.includes('office')) {
+          mapping.officialPhone = index;
+        }
+      } else if (lower.includes('personalphone') || lower.includes('personalnumber') || lower.includes('personal') || lower.includes('home')) {
+        mapping.personalPhone = index;
+      } else if (lower.includes('email') || lower.includes('mail')) {
+        mapping.email = index;
+      }
+    });
+
+    if (mapping.officeId === -1) mapping.officeId = 0;
+    if (mapping.name === -1) mapping.name = 1;
+    if (mapping.designation === -1) mapping.designation = 2;
+    if (mapping.officialPhone === -1) mapping.officialPhone = 3;
+    if (mapping.personalPhone === -1) mapping.personalPhone = 4;
+    if (mapping.email === -1) mapping.email = 5;
+
+    return mapping;
+  }
+
+  function parseSpreadsheet(file, fallbackCountryCode) {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        try {
+          const data = new Uint8Array(e.target.result);
+          const workbook = XLSX.read(data, { type: 'array' });
+          const firstSheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[firstSheetName];
+          const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+          
+          if (!rows || rows.length === 0) {
+            resolve({ success: false, message: 'The uploaded file is empty.', employees: [], skipped: 0 });
+            return;
+          }
+          
+          let startIndex = 0;
+          let headers = rows[0];
+          
+          const looksLikeHeader = headers.some(h => {
+            if (typeof h !== 'string') return false;
+            const l = h.toLowerCase();
+            return l.includes('id') || l.includes('name') || l.includes('phone') || l.includes('email');
+          });
+          
+          let mapping;
+          if (looksLikeHeader) {
+            mapping = mapSpreadsheetColumns(headers);
+            startIndex = 1;
+          } else {
+            mapping = { officeId: 0, name: 1, designation: 2, officialPhone: 3, personalPhone: 4, email: 5 };
+          }
+          
+          const validEmployees = [];
+          let skipped = 0;
+          
+          for (let i = startIndex; i < rows.length; i++) {
+            const row = rows[i];
+            if (!row || row.length === 0) continue;
+            
+            const isEmpty = row.every(val => val == null || String(val).trim() === '');
+            if (isEmpty) continue;
+            
+            const officeId = row[mapping.officeId] ? String(row[mapping.officeId]).trim() : '';
+            const name = row[mapping.name] ? String(row[mapping.name]).trim() : '';
+            const designation = row[mapping.designation] ? String(row[mapping.designation]).trim() : '';
+            const rawOfficialPhone = row[mapping.officialPhone] ? String(row[mapping.officialPhone]).trim() : '';
+            const rawPersonalPhone = row[mapping.personalPhone] ? String(row[mapping.personalPhone]).trim() : '';
+            const email = row[mapping.email] ? String(row[mapping.email]).trim() : '';
+            
+            if (!officeId || !name || !designation || !rawOfficialPhone) {
+              skipped++;
+              continue;
+            }
+            
+            if (!/^[a-zA-Z0-9]{7,}$/.test(officeId)) {
+              skipped++;
+              continue;
+            }
+            
+            if (email && !isValidEmail(email)) {
+              skipped++;
+              continue;
+            }
+            
+            const officialParsed = parsePhoneAndCountry(rawOfficialPhone.startsWith('+') || rawOfficialPhone.startsWith('011') ? rawOfficialPhone : fallbackCountryCode + rawOfficialPhone);
+            const oVal = validatePhone(officialParsed.localNumber, officialParsed.countryCode);
+            if (!oVal.valid) {
+              skipped++;
+              continue;
+            }
+            const officialPhone = officialParsed.countryCode + oVal.cleaned;
+            
+            let personalPhone = '';
+            if (rawPersonalPhone) {
+              const personalParsed = parsePhoneAndCountry(rawPersonalPhone.startsWith('+') || rawPersonalPhone.startsWith('011') ? rawPersonalPhone : fallbackCountryCode + rawPersonalPhone);
+              const pVal = validatePhone(personalParsed.localNumber, personalParsed.countryCode);
+              if (!pVal.valid) {
+                skipped++;
+                continue;
+              }
+              personalPhone = personalParsed.countryCode + pVal.cleaned;
+            }
+            
+            validEmployees.push({
+              id: 'ed' + Date.now() + Math.random().toString(36).slice(2, 7),
+              officeId,
+              name,
+              designation,
+              officialPhone,
+              personalPhone,
+              email
+            });
+          }
+          
+          resolve({ success: true, employees: validEmployees, skipped });
+        } catch (err) {
+          resolve({ success: false, message: 'Failed to parse spreadsheet: ' + err.message, employees: [], skipped: 0 });
+        }
+      };
+      
+      reader.onerror = function() {
+        resolve({ success: false, message: 'Failed to read file.', employees: [], skipped: 0 });
+      };
+      
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
   const DEFAULT_COMPANIES = {
     "Google": {
       name: "Google",
@@ -543,25 +687,17 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
         
         // Populate whitelist directory
         let directoryList = [];
-        if (empData.initialDirectoryText) {
-          const lines = empData.initialDirectoryText.split('\n');
-          for (let line of lines) {
-            line = line.trim();
-            if (!line) continue;
-            const parts = line.split(/[,\t]/).map(p => p.trim());
-            if (parts.length >= 4) {
-              directoryList.push({
-                id: 'ed' + Date.now() + Math.random().toString(36).slice(2, 7),
-                company_id: companyId,
-                office_id: parts[0],
-                name: parts[1],
-                designation: parts[2],
-                official_phone: parts[3],
-                personal_phone: parts[4] || '',
-                email: parts[5] || ''
-              });
-            }
-          }
+        if (empData.initialDirectory && Array.isArray(empData.initialDirectory)) {
+          directoryList = empData.initialDirectory.map(e => ({
+            id: e.id,
+            company_id: companyId,
+            office_id: e.officeId,
+            name: e.name,
+            designation: e.designation,
+            official_phone: e.officialPhone,
+            personal_phone: e.personalPhone || '',
+            email: e.email || ''
+          }));
         }
         
         // Ensure Admin itself is whitelisted
@@ -636,24 +772,8 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
         }
         
         // Populate local whitelist directory
-        if (empData.initialDirectoryText) {
-          const lines = empData.initialDirectoryText.split('\n');
-          for (let line of lines) {
-            line = line.trim();
-            if (!line) continue;
-            const parts = line.split(/[,\t]/).map(p => p.trim());
-            if (parts.length >= 4) {
-              db.companies[companyName].employeeDirectory.push({
-                id: 'ed' + Date.now() + Math.random().toString(36).slice(2, 7),
-                officeId: parts[0],
-                name: parts[1],
-                designation: parts[2],
-                officialPhone: parts[3],
-                personalPhone: parts[4] || '',
-                email: parts[5] || ''
-              });
-            }
-          }
+        if (empData.initialDirectory && Array.isArray(empData.initialDirectory)) {
+          db.companies[companyName].employeeDirectory = [...empData.initialDirectory];
         }
         
         // Ensure Admin itself is whitelisted locally
@@ -2623,9 +2743,9 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
           <div class="modal-head"><h3>Bulk Import Employees</h3><button class="modal-close" onclick="__app.closeModal()">×</button></div>
           <div class="modal-body">
             <div class="field">
-              <label for="d-bulk-text">Paste Employee List</label>
-              <textarea id="d-bulk-text" placeholder="OfficeID, Full Name, Designation, Official Phone, Email&#10;G-100200, John Doe, Developer, 011-234568, john@google.com&#10;G-100300, Jane Smith, Designer, 011-234569, jane@google.com" style="height:160px; font-family:'IBM Plex Mono', monospace; font-size:12.5px; line-height:1.4; padding:8px;" required></textarea>
-              <div class="field-hint" style="margin-top:6px;">Paste one employee per line. Separate fields with commas or tabs.</div>
+              <label for="d-bulk-file">Upload Employee List Spreadsheet</label>
+              <input type="file" id="d-bulk-file" accept=".xlsx, .xls, .csv" style="padding:6px; border:1px solid var(--line-strong); border-radius:6px; background:var(--surface); font-size:12.5px; width:100%;" required>
+              <div class="field-hint" style="margin-top:6px; line-height:1.4;">Select a spreadsheet file (.xlsx, .xls, .csv). The app will automatically analyze the columns. Make sure columns contain: Office ID, Name, Designation, and Official Phone.</div>
             </div>
           </div>
           <div class="modal-foot">
@@ -2639,9 +2759,10 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
   }
 
   async function submitBulkImport() {
-    const text = document.getElementById('d-bulk-text').value.trim();
-    if (!text) {
-      showToast('Please paste employee list.');
+    const fileInput = document.getElementById('d-bulk-file');
+    const file = fileInput ? fileInput.files[0] : null;
+    if (!file) {
+      showToast('Please select a spreadsheet file.');
       return;
     }
     
@@ -2651,72 +2772,20 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
       fallbackCountryCode = parsedAdminPhone.countryCode;
     }
 
-    const lines = text.split('\n');
+    showToast('Analyzing and importing directory spreadsheet...');
+    const parseRes = await parseSpreadsheet(file, fallbackCountryCode);
+    if (!parseRes.success) {
+      showToast(parseRes.message);
+      return;
+    }
+
     let imported = 0;
-    let failed = 0;
+    let failed = parseRes.skipped;
     
-    for (let line of lines) {
-      line = line.trim();
-      if (!line) continue;
-      
-      if (line.toLowerCase().startsWith('officeid') || line.toLowerCase().startsWith('office id')) {
-        continue;
-      }
-      
-      const parts = line.split(/[,\t]/).map(p => p.trim());
-      if (parts.length >= 4) {
-        const officeId = parts[0];
-        const name = parts[1];
-        const designation = parts[2];
-        const rawOfficialPhone = parts[3];
-        const rawPersonalPhone = parts[4] || '';
-        const email = parts[5] || '';
-        
-        if (!officeId || !name || !designation || !rawOfficialPhone) {
-          failed++;
-          continue;
-        }
-
-        if (email && !isValidEmail(email)) {
-          failed++;
-          continue;
-        }
-
-        const officialParsed = parsePhoneAndCountry(rawOfficialPhone.startsWith('+') ? rawOfficialPhone : fallbackCountryCode + rawOfficialPhone);
-        const oVal = validatePhone(officialParsed.localNumber, officialParsed.countryCode);
-        if (!oVal.valid) {
-          failed++;
-          continue;
-        }
-        const officialPhone = officialParsed.countryCode + oVal.cleaned;
-
-        let personalPhone = '';
-        if (rawPersonalPhone) {
-          const personalParsed = parsePhoneAndCountry(rawPersonalPhone.startsWith('+') ? rawPersonalPhone : fallbackCountryCode + rawPersonalPhone);
-          const pVal = validatePhone(personalParsed.localNumber, personalParsed.countryCode);
-          if (!pVal.valid) {
-            failed++;
-            continue;
-          }
-          personalPhone = personalParsed.countryCode + pVal.cleaned;
-        }
-
-        const emp = {
-          id: 'ed' + Date.now() + Math.random().toString(36).slice(2, 7),
-          officeId,
-          name,
-          designation,
-          officialPhone,
-          personalPhone,
-          email
-        };
-        
-        const res = await DbService.addDirectoryEmployee(emp);
-        if (res.success) {
-          imported++;
-        } else {
-          failed++;
-        }
+    for (const emp of parseRes.employees) {
+      const res = await DbService.addDirectoryEmployee(emp);
+      if (res.success) {
+        imported++;
       } else {
         failed++;
       }
@@ -3437,9 +3506,9 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
         if (forceAdmin && directoryEmpty) {
           directoryUploadHtml = `
             <div class="field" style="margin-top:14px;">
-              <label for="signup-dir-text">Upload Initial Employee Directory</label>
-              <textarea id="signup-dir-text" placeholder="OfficeID, Full Name, Designation, Official Phone, Email&#10;G-100200, John Doe, Developer, 011-234568, john@google.com&#10;G-100300, Jane Smith, Designer, 011-234569, jane@google.com" style="height:120px; font-family:'IBM Plex Mono', monospace; font-size:12px; line-height:1.4; padding:8px;" required>${esc(signupData.initialDirectoryText || '')}</textarea>
-              <div class="field-hint">Paste one employee per line, comma or tab-separated. You will be added to the whitelist automatically.</div>
+              <label for="signup-dir-file">Upload Initial Employee Directory (Optional)</label>
+              <input type="file" id="signup-dir-file" accept=".xlsx, .xls, .csv" style="padding:6px; border:1px solid var(--line-strong); border-radius:6px; background:var(--surface); font-size:12.5px; width:100%;">
+              <div class="field-hint" style="margin-top:6px; line-height:1.4;">Select a spreadsheet file (.xlsx, .xls, .csv). The app will automatically analyze the columns. Make sure columns contain: Office ID, Name, Designation, and Official Phone.</div>
             </div>
           `;
         }
@@ -3715,7 +3784,7 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     e.preventDefault();
     const role = document.getElementById('signup-role').value;
     let adminId = '';
-    let initialDirectoryText = '';
+    let initialDirectory = [];
     
     if (role === 'admin') {
       adminId = document.getElementById('signup-admin-id').value.trim();
@@ -3736,20 +3805,24 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
       }
 
       if (signupData.directoryEmpty) {
-        const dirEl = document.getElementById('signup-dir-text');
-        if (dirEl) {
-          initialDirectoryText = dirEl.value.trim();
-          if (!initialDirectoryText) {
-            showToast('Employee directory is required to register this company.');
+        const fileInput = document.getElementById('signup-dir-file');
+        const file = fileInput ? fileInput.files[0] : null;
+        if (file) {
+          const fallbackCountry = parsePhoneAndCountry(signupData.officialPhone).countryCode;
+          const res = await parseSpreadsheet(file, fallbackCountry);
+          if (!res.success) {
+            showToast(res.message);
             return;
           }
+          initialDirectory = res.employees;
+          showToast(`Directory loaded successfully: ${res.employees.length} employees imported. (${res.skipped} skipped due to invalid formats).`);
         }
       }
     }
     
     signupData.role = role;
     signupData.adminId = role === 'admin' ? adminId : '';
-    signupData.initialDirectoryText = initialDirectoryText;
+    signupData.initialDirectory = initialDirectory;
     
     signupStep = 3;
     renderAuth();
@@ -3788,7 +3861,7 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
       password: signupData.password,
       role: signupData.role,
       isBlocked: false,
-      initialDirectoryText: signupData.initialDirectoryText || ''
+      initialDirectory: signupData.initialDirectory || []
     };
     
     simulatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
