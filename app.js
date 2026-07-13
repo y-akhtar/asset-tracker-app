@@ -3616,15 +3616,10 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
             <span class="rivet" style="width:12px; height:12px;"></span>
             <div class="display">Asset Track</div>
           </div>
-          <div class="auth-title display">Verify Email & Phone</div>
-          <p style="font-size:13px; color:var(--ink-soft); text-align:center; margin-bottom:16px; line-height:1.4;">
-            A simulated OTP code has been sent to <br><strong>${esc(tempSignup.email)}</strong> and <strong>${esc(tempSignup.personalPhone)}</strong>.
+          <div class="auth-title display">Verify Email Address</div>
+          <p style="font-size:13px; color:var(--ink-soft); text-align:center; margin-bottom:20px; line-height:1.4;">
+            A 6-digit verification code has been sent to your email:<br><strong>${esc(tempSignup.email)}</strong>. <br>Please check your inbox (and spam folder).
           </p>
-          
-          <div style="background:var(--status-in-bg); color:var(--status-in); border:1px solid var(--status-in); border-radius:6px; padding:10px; font-size:12px; margin-bottom:20px; font-family:'IBM Plex Mono', monospace; text-align:center;">
-            <strong>SIMULATOR NOTIFICATION:</strong><br>
-            Your verification code is: <span style="font-weight:bold; font-size:14px; letter-spacing:1px;">${simulatedOtp}</span>
-          </div>
           
           <form id="otp-form">
             <div class="field">
@@ -3828,7 +3823,7 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     renderAuth();
   }
 
-  function handleStep3Submit(e) {
+  async function handleStep3Submit(e) {
     e.preventDefault();
     const password = document.getElementById('signup-password').value;
     const confirmPassword = document.getElementById('signup-confirm-password').value;
@@ -3865,9 +3860,53 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     };
     
     simulatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
-    authViewState = 'otp';
-    renderAuth();
-    showToast('Verification code generated!');
+    
+    showToast('Sending verification code to your email...');
+    
+    try {
+      const emailjsData = {
+        service_id: 'service_xcaojnw',
+        template_id: 'template_w8p1xql',
+        user_id: 'TtpqFyc8ZxT5Sjllp',
+        template_params: {
+          to_name: signupData.name,
+          name: signupData.name,
+          to_email: signupData.email,
+          email: signupData.email,
+          otp: simulatedOtp,
+          otp_code: simulatedOtp,
+          code: simulatedOtp,
+          verification_code: simulatedOtp
+        }
+      };
+
+      const response = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(emailjsData)
+      });
+
+      if (response.ok) {
+        showToast('Verification code sent successfully to ' + signupData.email + '!');
+        authViewState = 'otp';
+        renderAuth();
+      } else {
+        const errText = await response.text();
+        console.error('EmailJS Error:', errText);
+        showToast('Failed to send OTP email: ' + errText + '. Falling back to demo mode.');
+        console.log("DEMO OTP BACKUP:", simulatedOtp);
+        authViewState = 'otp';
+        renderAuth();
+      }
+    } catch (err) {
+      console.error('Email sending error:', err);
+      showToast('Network error: Could not send OTP email. Falling back to demo mode.');
+      console.log("DEMO OTP BACKUP:", simulatedOtp);
+      authViewState = 'otp';
+      renderAuth();
+    }
   }
 
   async function handleOtpSubmit(e) {
