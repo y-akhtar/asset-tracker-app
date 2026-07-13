@@ -701,8 +701,11 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
           }));
         }
         
-        // Ensure Admin itself is whitelisted
-        if (!directoryList.some(e => e.office_id.toLowerCase() === empData.officeId.toLowerCase())) {
+        // Ensure Admin / User itself is whitelisted in directory
+        const checkDir = await this.client.from('employee_directory').select('id').eq('company_id', companyId).ilike('office_id', empData.officeId);
+        const alreadyWhitelisted = checkDir.data && checkDir.data.length > 0;
+
+        if (!alreadyWhitelisted && !directoryList.some(e => e.office_id.toLowerCase() === empData.officeId.toLowerCase())) {
           directoryList.push({
             id: 'ed' + Date.now() + Math.random().toString(36).slice(2, 7),
             company_id: companyId,
