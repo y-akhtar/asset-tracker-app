@@ -40,6 +40,7 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
 
   const CATEGORIES = ['Laptops & Computers', 'Smartphones & Tablets', 'Networking Hardware', 'Monitors & Displays', 'Printers & Scanners', 'AV Equipment', 'Lab Electronics', 'Other Devices'];
   const DEFAULT_CERTIFIED = ["HOD", "CEO", "CFO", "COO", "Chairperson", "President", "Director", "VP"];
+  const EXECUTIVE_ROLES = ['ceo', 'coo', 'co founder', 'co-founder', 'cofounder', 'cfo', 'chairperson', 'president', 'cmo', 'cto', 'vice president', 'vice-president', 'vp'];
 
   const COUNTRIES = [
     { name: 'India (+91)', code: '+91', digits: [10], placeholder: '98765 43210' },
@@ -1442,7 +1443,14 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
 
     updateDirectoryEmployee: async function(emp) {
       if (this.isSupabase) {
-        const { error } = await this.client.from('employee_directory').update({
+        const oldDirRes = await this.client.from('employee_directory').select('company_id, office_id').eq('id', emp.id).single();
+        if (oldDirRes.error || !oldDirRes.data) {
+          return { success: false, message: 'Failed to retrieve directory record: ' + (oldDirRes.error?.message || 'Not found') };
+        }
+        const companyId = oldDirRes.data.company_id;
+        const oldOfficeId = oldDirRes.data.office_id;
+
+        const { error: dirError } = await this.client.from('employee_directory').update({
           office_id: emp.officeId,
           name: emp.name,
           designation: emp.designation,
@@ -1450,13 +1458,64 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
           personal_phone: emp.personalPhone || null,
           email: emp.email || null
         }).eq('id', emp.id);
-        if (error) return { success: false, message: error.message };
+        if (dirError) return { success: false, message: dirError.message };
+
+        const { data: matchedUser } = await this.client.from('employees').select('office_id').eq('company_id', companyId).eq('office_id', oldOfficeId);
+        if (matchedUser && matchedUser.length > 0) {
+          const { error: empError } = await this.client.from('employees').update({
+            office_id: emp.officeId,
+            name: emp.name,
+            post: emp.designation,
+            official_phone: emp.officialPhone,
+            personal_phone: emp.personalPhone || null,
+            email: emp.email || null
+          }).eq('company_id', companyId).eq('office_id', oldOfficeId);
+          
+          if (empError) {
+            console.error('Cascading update failed on employees table:', empError);
+          }
+        }
+
+        if (currentUser && currentUser.companyId === companyId && currentUser.officeId.toLowerCase() === oldOfficeId.toLowerCase()) {
+          currentUser.officeId = emp.officeId;
+          currentUser.name = emp.name;
+          currentUser.post = emp.designation;
+          currentUser.officialPhone = emp.officialPhone;
+          currentUser.personalPhone = emp.personalPhone || '';
+          currentUser.email = emp.email || '';
+          saveSession(currentUser);
+        }
+
         return { success: true };
       } else {
         const company = db.companies[currentUser.company];
         if (!company.employeeDirectory) company.employeeDirectory = [];
         const idx = company.employeeDirectory.findIndex(e => e.id === emp.id);
         if (idx !== -1) {
+          const oldEmp = company.employeeDirectory[idx];
+          
+          if (company.employees) {
+            const userIdx = company.employees.findIndex(e => e.officeId.toLowerCase() === oldEmp.officeId.toLowerCase());
+            if (userIdx !== -1) {
+              company.employees[userIdx].officeId = emp.officeId;
+              company.employees[userIdx].name = emp.name;
+              company.employees[userIdx].post = emp.designation;
+              company.employees[userIdx].officialPhone = emp.officialPhone;
+              company.employees[userIdx].personalPhone = emp.personalPhone || '';
+              company.employees[userIdx].email = emp.email || '';
+            }
+          }
+
+          if (currentUser && currentUser.officeId.toLowerCase() === oldEmp.officeId.toLowerCase()) {
+            currentUser.officeId = emp.officeId;
+            currentUser.name = emp.name;
+            currentUser.post = emp.designation;
+            currentUser.officialPhone = emp.officialPhone;
+            currentUser.personalPhone = emp.personalPhone || '';
+            currentUser.email = emp.email || '';
+            saveSession(currentUser);
+          }
+
           company.employeeDirectory[idx] = emp;
           saveDatabase();
           return { success: true };
@@ -3465,13 +3524,16 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
         const isCertified = signupData.isCertified;
         const companyExists = signupData.companyExists;
         const directoryEmpty = signupData.directoryEmpty;
-        const forceAdmin = !companyExists || directoryEmpty;
+        const forceAdmin = !companyExists || directoryEmpty || signupData.forceAdminBypass;
         const selectedRole = forceAdmin ? 'admin' : (signupData.role || 'user');
         
         let optionsHtml = '';
         if (forceAdmin) {
+          const blockReason = signupData.forceAdminBypass 
+            ? 'Bypassing directory requires Admin Mode' 
+            : 'Company directory empty';
           optionsHtml = `
-            <option value="user" disabled>User Mode (Blocked — Company directory empty)</option>
+            <option value="user" disabled>User Mode (Blocked — ${blockReason})</option>
             <option value="admin" selected>Admin Mode (Register new company/directory)</option>
           `;
         } else {
@@ -3492,6 +3554,12 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
           warningHtml = `
             <div style="background:var(--status-out-bg); color:var(--status-out); border:1px solid var(--status-out); border-radius:6px; padding:10px; font-size:12px; margin-bottom:16px; line-height:1.4;">
               <strong>Empty Company Directory:</strong> The company <strong>"${esc(signupData.actualCompany)}"</strong> is registered but has no employee records. An Admin must sign up first to upload the directory.
+            </div>
+          `;
+        } else if (signupData.forceAdminBypass) {
+          warningHtml = `
+            <div style="background:var(--status-out-bg); color:var(--status-out); border:1px solid var(--status-out); border-radius:6px; padding:10px; font-size:12px; margin-bottom:16px; line-height:1.4;">
+              <strong>Top Executive Bypass:</strong> You are registering as an Admin under <strong>"${esc(signupData.actualCompany)}"</strong> using executive privileges (your details were not pre-loaded by an Admin).
             </div>
           `;
         } else if (!isCertified) {
@@ -3750,19 +3818,22 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     let isCertified = await DbService.checkDesignationCertified(post, company);
     let directoryEmpty = false;
     
+    let forceAdminBypass = false;
     if (companyExists) {
-      const directoryCount = await DbService.getCompanyDirectoryCount(company);
-      if (directoryCount > 0) {
-        const whitelisted = await DbService.checkDirectoryWhitelist(officeId, name, company);
-        if (!whitelisted) {
-          showToast(`Access Denied: Name & Office ID do not match the directory for "${company}".`);
-          return;
-        }
-        // Overwrite with whitelisted details
+      const whitelisted = await DbService.checkDirectoryWhitelist(officeId, name, company);
+      if (whitelisted) {
         signupData.post = whitelisted.designation;
         isCertified = await DbService.checkDesignationCertified(whitelisted.designation, company);
       } else {
-        directoryEmpty = true;
+        const isExecutive = EXECUTIVE_ROLES.some(role => post.toLowerCase().includes(role));
+        if (isExecutive) {
+          signupData.post = post;
+          isCertified = true;
+          forceAdminBypass = true;
+        } else {
+          showToast(`Access Denied: You must be whitelisted in the employee directory to sign up under "${company}".`);
+          return;
+        }
       }
     } else {
       directoryEmpty = true;
@@ -3770,6 +3841,7 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     
     signupData.isCertified = isCertified;
     signupData.directoryEmpty = directoryEmpty;
+    signupData.forceAdminBypass = forceAdminBypass;
     
     signupStep = 2;
     renderAuth();
