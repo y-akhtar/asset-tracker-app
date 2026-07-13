@@ -104,7 +104,7 @@ const SUPABASE_URL = "https://zyrtfpejwwbbkqvtthwp.supabase.co";
     const lower = post.toLowerCase();
     
     // Level 1: Executive Level
-    const level1 = ['ceo', 'cto', 'cio', 'coo', 'cfo', 'cpo', 'managing director', 'president', 'chairperson', 'founder', 'board', 'c-suite'];
+    const level1 = ['ceo', 'cto', 'cio', 'coo', 'cfo', 'cpo', 'cmo', 'managing director', 'president', 'chairperson', 'founder', 'board', 'c-suite'];
     if (level1.some(w => lower.includes(w))) return 1;
     
     // Level 2: Senior Management
